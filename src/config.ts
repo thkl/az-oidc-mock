@@ -8,7 +8,7 @@ const userSchema = z.object({
   email: z.string().email(),
   preferred_username: z.string().min(1),
   roles: z.array(z.string()).default([]),
-  claims: z.record(z.unknown()).default({})
+  claims: z.record(z.string(), z.unknown()).default({})
 });
 
 const clientSchema = z.object({

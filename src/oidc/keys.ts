@@ -1,8 +1,8 @@
-import { exportJWK, generateKeyPair, type JWK, type KeyLike } from "jose";
+import { exportJWK, generateKeyPair, type JWK } from "jose";
 
 export type SigningKeys = {
   kid: string;
-  privateKey: KeyLike;
+  privateKey: CryptoKey;
   jwks: { keys: JWK[] };
 };
 
