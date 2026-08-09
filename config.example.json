@@ -1,0 +1,57 @@
+{
+  "port": 3000,
+  "baseUrl": "http://localhost:3000",
+  "tokenLifetimeSeconds": 3600,
+  "refreshTokenLifetimeSeconds": 86400,
+  "rotateRefreshTokens": true,
+  "tenants": [
+    {
+      "tenantId": "common",
+      "displayName": "Default Tenant",
+      "clients": [
+        {
+          "clientId": "local-app",
+          "clientSecret": "local-secret",
+          "redirectUris": ["http://localhost:5173/auth/callback"],
+          "allowedScopes": ["openid", "profile", "email", "offline_access"]
+        }
+      ],
+      "users": [
+        {
+          "sub": "00000000-0000-0000-0000-000000000001",
+          "name": "Alice Example",
+          "email": "alice@example.test",
+          "preferred_username": "alice@example.test",
+          "roles": ["Admin"]
+        },
+        {
+          "sub": "00000000-0000-0000-0000-000000000002",
+          "name": "Bob Example",
+          "email": "bob@example.test",
+          "preferred_username": "bob@example.test",
+          "roles": ["Reader"]
+        }
+      ]
+    },
+    {
+      "tenantId": "contoso",
+      "displayName": "Contoso",
+      "clients": [
+        {
+          "clientId": "contoso-app",
+          "redirectUris": ["http://localhost:5174/callback"],
+          "allowedScopes": ["openid", "profile", "email", "offline_access"]
+        }
+      ],
+      "users": [
+        {
+          "sub": "10000000-0000-0000-0000-000000000001",
+          "name": "Casey Contoso",
+          "email": "casey@contoso.test",
+          "preferred_username": "casey@contoso.test",
+          "roles": ["User"]
+        }
+      ]
+    }
+  ]
+}
