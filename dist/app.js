@@ -29,40 +29,13 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
     app.get("/health", (_req, res) => {
         res.json({ status: "ok" });
     });
-    app.get("/:tenantId/.well-known/openid-configuration", (req, res) => {
+    app.get(["/:tenantId/.well-known/openid-configuration", "/:tenantId/v2.0/.well-known/openid-configuration"], (req, res) => {
         const config = getConfig();
         const tenant = getTenantOr404(config, req, res);
         if (!tenant)
             return;
         logger.verbose(config, "serving discovery document", { tenantId: tenant.tenantId });
-        const base = config.baseUrl.replace(/\/$/, "");
-        const tenantBase = `${base}/${encodeURIComponent(tenant.tenantId)}/oauth2/v2.0`;
-        res.json({
-            issuer: tenantIssuer(config, tenant.tenantId),
-            authorization_endpoint: `${tenantBase}/authorize`,
-            token_endpoint: `${tenantBase}/token`,
-            jwks_uri: `${base}/${encodeURIComponent(tenant.tenantId)}/discovery/v2.0/keys`,
-            end_session_endpoint: `${tenantBase}/logout`,
-            response_types_supported: ["code"],
-            subject_types_supported: ["public"],
-            id_token_signing_alg_values_supported: ["RS256"],
-            scopes_supported: tenantScopes(tenant),
-            token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
-            claims_supported: [
-                "aud",
-                "email",
-                "exp",
-                "iat",
-                "iss",
-                "name",
-                "nonce",
-                "oid",
-                "preferred_username",
-                "roles",
-                "sub",
-                "tid"
-            ]
-        });
+        res.json(createDiscoveryDocument(config, tenant));
     });
     app.get("/:tenantId/discovery/v2.0/keys", (req, res) => {
         const config = getConfig();
@@ -201,10 +174,62 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
     return app;
 }
 /**
+ * Builds a Microsoft Entra ID v2.0-style discovery document for a tenant.
+ */
+function createDiscoveryDocument(config, tenant) {
+    const base = config.baseUrl.replace(/\/$/, "");
+    const encodedTenantId = encodeURIComponent(tenant.tenantId);
+    const tenantBase = `${base}/${encodedTenantId}/oauth2/v2.0`;
+    return {
+        token_endpoint: `${tenantBase}/token`,
+        token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
+        jwks_uri: `${base}/${encodedTenantId}/discovery/v2.0/keys`,
+        response_modes_supported: ["query", "form_post"],
+        subject_types_supported: ["pairwise"],
+        id_token_signing_alg_values_supported: ["RS256"],
+        response_types_supported: ["code", "id_token", "code id_token"],
+        grant_types_supported: ["authorization_code", "refresh_token"],
+        scopes_supported: tenantScopes(tenant),
+        issuer: tenantIssuer(config, tenant.tenantId),
+        authorization_endpoint: `${tenantBase}/authorize`,
+        device_authorization_endpoint: `${tenantBase}/devicecode`,
+        http_logout_supported: true,
+        frontchannel_logout_supported: true,
+        end_session_endpoint: `${tenantBase}/logout`,
+        claims_supported: [
+            "aud",
+            "email",
+            "exp",
+            "iat",
+            "iss",
+            "name",
+            "nbf",
+            "nonce",
+            "oid",
+            "preferred_username",
+            "roles",
+            "sub",
+            "tid",
+            "ver"
+        ],
+        kerberos_endpoint: `${base}/${encodedTenantId}/kerberos`,
+        tenant_region_scope: "NA",
+        cloud_instance_name: "mock",
+        cloud_graph_host_name: "graph.windows.net",
+        msgraph_host: "graph.microsoft.com",
+        rbac_url: "https://pas.windows.net"
+    };
+}
+/**
  * Resolves the requested tenant or sends a 404 response.
  */
 function getTenantOr404(config, req, res) {
-    const tenant = findTenant(config, req.params.tenantId);
+    const tenantId = readParamString(req.params.tenantId);
+    if (!tenantId) {
+        res.status(404).json({ error: "tenant_not_found" });
+        return undefined;
+    }
+    const tenant = findTenant(config, tenantId);
     if (!tenant) {
         res.status(404).json({ error: "tenant_not_found" });
     }
@@ -520,6 +545,15 @@ function sendTokenError(res, error, description, status = 400) {
  */
 function readString(value) {
     return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+/**
+ * Converts an Express route parameter into one string value.
+ */
+function readParamString(value) {
+    if (Array.isArray(value)) {
+        return value[0];
+    }
+    return readString(value);
 }
 /**
  * Normalizes empty optional string values to undefined.

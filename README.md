@@ -54,6 +54,7 @@ For tenant `common`:
 
 ```text
 GET  http://localhost:3000/common/.well-known/openid-configuration
+GET  http://localhost:3000/common/v2.0/.well-known/openid-configuration
 GET  http://localhost:3000/common/discovery/v2.0/keys
 GET  http://localhost:3000/common/oauth2/v2.0/authorize
 POST http://localhost:3000/common/oauth2/v2.0/token
@@ -65,6 +66,8 @@ The issuer is:
 ```text
 http://localhost:3000/common/v2.0
 ```
+
+For MSAL, use `http://localhost:3000/common` as the authority when the library appends the v2.0 discovery path itself. For non-Azure custom-authority mode, configure MSAL with the local authority as known/trusted according to the MSAL client you use.
 
 ## Authorization Code Flow
 

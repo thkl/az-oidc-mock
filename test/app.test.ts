@@ -83,6 +83,18 @@ describe("Azure OIDC mock", () => {
     expect(res.body.issuer).toBe("http://127.0.0.1:3000/common/v2.0");
     expect(res.body.authorization_endpoint).toBe("http://127.0.0.1:3000/common/oauth2/v2.0/authorize");
     expect(res.body.jwks_uri).toBe("http://127.0.0.1:3000/common/discovery/v2.0/keys");
+    expect(res.body.response_modes_supported).toContain("query");
+    expect(res.body.grant_types_supported).toContain("refresh_token");
+    expect(res.body.cloud_instance_name).toBe("mock");
+  });
+
+  it("serves the Azure v2.0 discovery path that MSAL commonly resolves", async () => {
+    const app = createApp({ config, keys, logger: silentLogger });
+
+    const res = await request(app).get("/common/v2.0/.well-known/openid-configuration").expect(200);
+
+    expect(res.body.issuer).toBe("http://127.0.0.1:3000/common/v2.0");
+    expect(res.body.token_endpoint).toBe("http://127.0.0.1:3000/common/oauth2/v2.0/token");
   });
 
   it("uses the latest config provider value for new requests", async () => {
