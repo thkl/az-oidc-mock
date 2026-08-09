@@ -39,6 +39,10 @@ export type MockClient = z.infer<typeof clientSchema>;
 export type MockTenant = z.infer<typeof tenantSchema>;
 export type AppConfig = z.infer<typeof appConfigSchema>;
 
+export type ConfigWatcher = {
+  close: () => void;
+};
+
 export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"): AppConfig {
   const resolved = path.resolve(configPath);
   const raw = fs.readFileSync(resolved, "utf8");
@@ -62,11 +66,69 @@ export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"
 
   return {
     ...parsed,
-    port: process.env.PORT ? Number(process.env.PORT) : parsed.port,
-    baseUrl: process.env.BASE_URL ?? parsed.baseUrl
+    port: readPortOverride(parsed.port),
+    baseUrl: readBaseUrlOverride(parsed.baseUrl)
+  };
+}
+
+export function watchConfig(configPath: string, onReload: (config: AppConfig) => void): ConfigWatcher {
+  const resolved = path.resolve(configPath);
+  let lastMtimeMs = fs.statSync(resolved).mtimeMs;
+
+  fs.watchFile(resolved, { interval: 500 }, (current, previous) => {
+    if (previous.mtimeMs === 0) {
+      lastMtimeMs = current.mtimeMs;
+      return;
+    }
+    if (current.mtimeMs === previous.mtimeMs || current.mtimeMs <= lastMtimeMs) {
+      return;
+    }
+    lastMtimeMs = current.mtimeMs;
+
+    try {
+      onReload(loadConfig(resolved));
+      console.log(`Reloaded config from ${resolved}`);
+    } catch (error) {
+      console.error(`Failed to reload config from ${resolved}`);
+      console.error(error);
+    }
+  });
+
+  return {
+    close: () => {
+      fs.unwatchFile(resolved);
+    }
   };
 }
 
 export function tenantIssuer(config: AppConfig, tenantId: string): string {
   return `${config.baseUrl.replace(/\/$/, "")}/${tenantId}/v2.0`;
+}
+
+function readPortOverride(fallback: number): number {
+  if (!process.env.PORT) {
+    return fallback;
+  }
+  const port = Number(process.env.PORT);
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new Error(`Invalid PORT override: ${process.env.PORT}`);
+  }
+  return port;
+}
+
+function readBaseUrlOverride(fallback: string): string {
+  const override = process.env.OIDC_MOCK_BASE_URL ?? process.env.BASE_URL;
+  if (!override) {
+    return fallback;
+  }
+
+  try {
+    new URL(override);
+    return override;
+  } catch {
+    if (process.env.OIDC_MOCK_BASE_URL) {
+      throw new Error(`Invalid OIDC_MOCK_BASE_URL override: ${process.env.OIDC_MOCK_BASE_URL}`);
+    }
+    return fallback;
+  }
 }

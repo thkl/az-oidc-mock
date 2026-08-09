@@ -49,10 +49,63 @@ export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"
     }
     return {
         ...parsed,
-        port: process.env.PORT ? Number(process.env.PORT) : parsed.port,
-        baseUrl: process.env.BASE_URL ?? parsed.baseUrl
+        port: readPortOverride(parsed.port),
+        baseUrl: readBaseUrlOverride(parsed.baseUrl)
+    };
+}
+export function watchConfig(configPath, onReload) {
+    const resolved = path.resolve(configPath);
+    let lastMtimeMs = fs.statSync(resolved).mtimeMs;
+    fs.watchFile(resolved, { interval: 500 }, (current, previous) => {
+        if (previous.mtimeMs === 0) {
+            lastMtimeMs = current.mtimeMs;
+            return;
+        }
+        if (current.mtimeMs === previous.mtimeMs || current.mtimeMs <= lastMtimeMs) {
+            return;
+        }
+        lastMtimeMs = current.mtimeMs;
+        try {
+            onReload(loadConfig(resolved));
+            console.log(`Reloaded config from ${resolved}`);
+        }
+        catch (error) {
+            console.error(`Failed to reload config from ${resolved}`);
+            console.error(error);
+        }
+    });
+    return {
+        close: () => {
+            fs.unwatchFile(resolved);
+        }
     };
 }
 export function tenantIssuer(config, tenantId) {
     return `${config.baseUrl.replace(/\/$/, "")}/${tenantId}/v2.0`;
+}
+function readPortOverride(fallback) {
+    if (!process.env.PORT) {
+        return fallback;
+    }
+    const port = Number(process.env.PORT);
+    if (!Number.isInteger(port) || port <= 0) {
+        throw new Error(`Invalid PORT override: ${process.env.PORT}`);
+    }
+    return port;
+}
+function readBaseUrlOverride(fallback) {
+    const override = process.env.OIDC_MOCK_BASE_URL ?? process.env.BASE_URL;
+    if (!override) {
+        return fallback;
+    }
+    try {
+        new URL(override);
+        return override;
+    }
+    catch {
+        if (process.env.OIDC_MOCK_BASE_URL) {
+            throw new Error(`Invalid OIDC_MOCK_BASE_URL override: ${process.env.OIDC_MOCK_BASE_URL}`);
+        }
+        return fallback;
+    }
 }

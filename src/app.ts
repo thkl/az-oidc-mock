@@ -15,7 +15,7 @@ import {
 import { renderLoginPage } from "./views/login.js";
 
 type AppDeps = {
-  config: AppConfig;
+  config: AppConfig | (() => AppConfig);
   keys: SigningKeys;
   state?: OidcState;
 };
@@ -32,6 +32,7 @@ type AuthorizeQuery = {
 
 export function createApp({ config, keys, state = new OidcState() }: AppDeps): express.Express {
   const app = express();
+  const getConfig = typeof config === "function" ? config : () => config;
   app.disable("x-powered-by");
   app.use(express.urlencoded({ extended: false }));
   app.use(express.json());
@@ -41,6 +42,7 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
   });
 
   app.get("/:tenantId/.well-known/openid-configuration", (req, res) => {
+    const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
 
@@ -75,12 +77,14 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
   });
 
   app.get("/:tenantId/discovery/v2.0/keys", (req, res) => {
+    const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
     res.json(keys.jwks);
   });
 
   app.get("/:tenantId/oauth2/v2.0/authorize", (req, res) => {
+    const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
 
@@ -114,6 +118,7 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
   });
 
   app.post("/:tenantId/login", (req, res) => {
+    const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
 
@@ -134,6 +139,7 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
   });
 
   app.post("/:tenantId/oauth2/v2.0/token", async (req, res) => {
+    const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
 
@@ -157,6 +163,7 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
   });
 
   app.get("/:tenantId/oauth2/v2.0/logout", (req, res) => {
+    const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
     clearSessionUser(res, tenant.tenantId);
@@ -518,4 +525,3 @@ function isUrl(value: string): boolean {
 function tenantScopes(tenant: MockTenant): string[] {
   return [...new Set(tenant.clients.flatMap((client) => client.allowedScopes))].sort();
 }
-

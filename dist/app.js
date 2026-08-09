@@ -6,6 +6,7 @@ import { findClient, findTenant, findUser, parseScopes, validateRedirectUri, val
 import { renderLoginPage } from "./views/login.js";
 export function createApp({ config, keys, state = new OidcState() }) {
     const app = express();
+    const getConfig = typeof config === "function" ? config : () => config;
     app.disable("x-powered-by");
     app.use(express.urlencoded({ extended: false }));
     app.use(express.json());
@@ -13,6 +14,7 @@ export function createApp({ config, keys, state = new OidcState() }) {
         res.json({ status: "ok" });
     });
     app.get("/:tenantId/.well-known/openid-configuration", (req, res) => {
+        const config = getConfig();
         const tenant = getTenantOr404(config, req, res);
         if (!tenant)
             return;
@@ -46,12 +48,14 @@ export function createApp({ config, keys, state = new OidcState() }) {
         });
     });
     app.get("/:tenantId/discovery/v2.0/keys", (req, res) => {
+        const config = getConfig();
         const tenant = getTenantOr404(config, req, res);
         if (!tenant)
             return;
         res.json(keys.jwks);
     });
     app.get("/:tenantId/oauth2/v2.0/authorize", (req, res) => {
+        const config = getConfig();
         const tenant = getTenantOr404(config, req, res);
         if (!tenant)
             return;
@@ -79,6 +83,7 @@ export function createApp({ config, keys, state = new OidcState() }) {
         }));
     });
     app.post("/:tenantId/login", (req, res) => {
+        const config = getConfig();
         const tenant = getTenantOr404(config, req, res);
         if (!tenant)
             return;
@@ -96,6 +101,7 @@ export function createApp({ config, keys, state = new OidcState() }) {
         redirectWithCode(res, state, tenant.tenantId, validation.client, validation.request, userSub);
     });
     app.post("/:tenantId/oauth2/v2.0/token", async (req, res) => {
+        const config = getConfig();
         const tenant = getTenantOr404(config, req, res);
         if (!tenant)
             return;
@@ -116,6 +122,7 @@ export function createApp({ config, keys, state = new OidcState() }) {
         sendTokenError(res, "unsupported_grant_type", "Only authorization_code and refresh_token are supported");
     });
     app.get("/:tenantId/oauth2/v2.0/logout", (req, res) => {
+        const config = getConfig();
         const tenant = getTenantOr404(config, req, res);
         if (!tenant)
             return;
