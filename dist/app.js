@@ -50,10 +50,12 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
         const tenant = getTenantOr404(config, req, res);
         if (!tenant)
             return;
+        const enableSessions = tenant.enableSessions;
         logger.verbose(config, "authorize request received", {
             tenantId: tenant.tenantId,
             clientId: req.query.client_id,
-            prompt: req.query.prompt
+            prompt: req.query.prompt,
+            enableSessions
         });
         const validation = validateAuthorizeRequest(tenant, req.query);
         if (!validation.ok) {
@@ -65,7 +67,7 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
             sendAuthorizeError(res, req.query.redirect_uri, req.query.state, validation.error, validation.description);
             return;
         }
-        if (tenant.enableSessions === true) {
+        if (enableSessions === true) {
             const sessionUser = getSessionUser(req, tenant.tenantId);
             if (sessionUser) {
                 logger.verbose(config, "authorize request satisfied from existing session", {
