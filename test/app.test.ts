@@ -7,6 +7,7 @@ import { createApp } from "../src/app.js";
 import { loadConfig, watchConfig, type AppConfig } from "../src/config.js";
 import type { Logger } from "../src/logger.js";
 import { createSigningKeys, type SigningKeys } from "../src/oidc/keys.js";
+import { loadTlsOptions } from "../src/tls.js";
 
 const config: AppConfig = {
   port: 3000,
@@ -264,6 +265,76 @@ describe("Azure OIDC mock", () => {
       expect(() => loadConfig(configPath)).toThrow();
     } finally {
       watcher.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads TLS config with generated certificate settings", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-"));
+    const configPath = path.join(dir, "config.json");
+
+    try {
+      await fs.writeFile(
+        configPath,
+        JSON.stringify({
+          ...config,
+          baseUrl: "https://localhost:3443",
+          tls: {
+            autoGenerate: true,
+            hosts: ["localhost", "127.0.0.1"],
+            days: 30
+          }
+        }),
+        "utf8"
+      );
+
+      const loaded = loadConfig(configPath);
+      expect(loaded.tls).toEqual({
+        autoGenerate: true,
+        hosts: ["localhost", "127.0.0.1"],
+        days: 30
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects incomplete static TLS config", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-"));
+    const configPath = path.join(dir, "config.json");
+
+    try {
+      await fs.writeFile(
+        configPath,
+        JSON.stringify({
+          ...config,
+          tls: {
+            keyPath: "./localhost-key.pem"
+          }
+        }),
+        "utf8"
+      );
+
+      expect(() => loadConfig(configPath)).toThrow();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("generates default TLS files next to the active config file", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-"));
+    const configPath = path.join(dir, "config.json");
+
+    try {
+      loadTlsOptions({
+        autoGenerate: true,
+        hosts: ["localhost", "127.0.0.1"],
+        days: 1
+      }, configPath);
+
+      await expect(fs.stat(path.join(dir, "localhost-key.pem"))).resolves.toBeTruthy();
+      await expect(fs.stat(path.join(dir, "localhost-cert.pem"))).resolves.toBeTruthy();
+    } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
   });

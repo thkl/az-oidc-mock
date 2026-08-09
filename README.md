@@ -23,6 +23,63 @@ CONFIG_PATH=/path/to/config.json pnpm start
 PORT=3107 OIDC_MOCK_BASE_URL=http://localhost:3107 pnpm start
 ```
 
+To run the mock directly over HTTPS, provide a local certificate and key either in `config.json`:
+
+```json
+{
+  "baseUrl": "https://localhost:3443",
+  "tls": {
+    "keyPath": "./localhost-key.pem",
+    "certPath": "./localhost-cert.pem"
+  }
+}
+```
+
+Or with environment variables:
+
+```bash
+PORT=3443 \
+OIDC_MOCK_BASE_URL=https://localhost:3443 \
+OIDC_MOCK_TLS_KEY_PATH=./localhost-key.pem \
+OIDC_MOCK_TLS_CERT_PATH=./localhost-cert.pem \
+pnpm start
+```
+
+The server can also generate and reuse a self-signed certificate at startup:
+
+```json
+{
+  "baseUrl": "https://localhost:3443",
+  "tls": {
+    "autoGenerate": true,
+    "hosts": ["localhost", "127.0.0.1"],
+    "days": 365
+  }
+}
+```
+
+By default, generated certificates are stored next to the active config file as `localhost-cert.pem` and `localhost-key.pem`. For Docker, bind-mount the config directory, not just the config file, so the generated certificate and key persist:
+
+```bash
+docker run --rm -p 3443:3443 \
+  -e CONFIG_PATH=/config/config.json \
+  -v ./oidc-config:/config \
+  az-oidc-mock
+```
+
+Set `tls.certPath` and `tls.keyPath` with `autoGenerate: true` to choose different output paths.
+
+For a self-signed localhost certificate, `mkcert` is the least painful option because it also installs a local development CA trusted by your browser:
+
+```bash
+mkcert -install
+mkcert -key-file localhost-key.pem -cert-file localhost-cert.pem localhost 127.0.0.1
+```
+
+MSAL will only trust a self-signed certificate if the runtime trusts it. Browser-based MSAL uses browser or operating-system certificate trust. MSAL Node uses Node's TLS trust store; for a custom CA, pass it through `NODE_EXTRA_CA_CERTS`.
+
+TLS settings are read at startup. Restart the server after changing certificate paths.
+
 `config.json` is watched while the server is running. Valid changes are reloaded automatically for new requests. If a changed file is invalid JSON or fails schema validation, the server keeps using the last valid config and logs the reload error.
 
 Verbose logging can be enabled in `config.json`:

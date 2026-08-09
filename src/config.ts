@@ -26,9 +26,31 @@ const tenantSchema = z.object({
   enableSessions: z.boolean().default(true),
 });
 
+const tlsSchema = z.object({
+  keyPath: z.string().min(1).optional(),
+  certPath: z.string().min(1).optional(),
+  autoGenerate: z.boolean().default(false),
+  hosts: z.array(z.string().min(1)).default(["localhost", "127.0.0.1"]),
+  days: z.number().int().positive().default(365)
+}).superRefine((tls, ctx) => {
+  if (!tls.autoGenerate && (!tls.keyPath || !tls.certPath)) {
+    ctx.addIssue({
+      code: "custom",
+      message: "tls.keyPath and tls.certPath are required unless tls.autoGenerate is true"
+    });
+  }
+  if ((tls.keyPath && !tls.certPath) || (!tls.keyPath && tls.certPath)) {
+    ctx.addIssue({
+      code: "custom",
+      message: "tls.keyPath and tls.certPath must be set together"
+    });
+  }
+});
+
 const appConfigSchema = z.object({
   port: z.number().int().positive().default(3000),
   baseUrl: z.string().url(),
+  tls: tlsSchema.optional(),
   verbose: z.boolean().default(false),
   tokenLifetimeSeconds: z.number().int().positive().default(3600),
   refreshTokenLifetimeSeconds: z.number().int().positive().default(86400),
@@ -73,6 +95,7 @@ export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"
     ...parsed,
     port: readPortOverride(parsed.port),
     baseUrl: readBaseUrlOverride(parsed.baseUrl),
+    tls: readTlsOverride(parsed.tls),
     verbose: readBooleanOverride("OIDC_MOCK_VERBOSE", parsed.verbose)
   };
 }
@@ -154,6 +177,37 @@ function readBaseUrlOverride(fallback: string): string {
 }
 
 /**
+ * Reads optional TLS certificate paths used by the startup listener.
+ */
+function readTlsOverride(fallback: AppConfig["tls"]): AppConfig["tls"] {
+  const keyPath = process.env.OIDC_MOCK_TLS_KEY_PATH;
+  const certPath = process.env.OIDC_MOCK_TLS_CERT_PATH;
+  const autoGenerate = readOptionalBooleanOverride("OIDC_MOCK_TLS_AUTO_GENERATE");
+  const hosts = process.env.OIDC_MOCK_TLS_HOSTS;
+  if (!keyPath && !certPath && autoGenerate === undefined && !hosts) {
+    return fallback;
+  }
+  if (!fallback && !keyPath && !certPath && autoGenerate === false && !hosts) {
+    return undefined;
+  }
+
+  const override = {
+    ...(fallback ?? {}),
+    ...(keyPath ? { keyPath } : {}),
+    ...(certPath ? { certPath } : {}),
+    ...(autoGenerate !== undefined ? { autoGenerate } : {}),
+    ...(hosts ? { hosts: hosts.split(",").map((host) => host.trim()).filter(Boolean) } : {})
+  };
+
+  if (!keyPath || !certPath) {
+    if (keyPath || certPath) {
+      throw new Error("OIDC_MOCK_TLS_KEY_PATH and OIDC_MOCK_TLS_CERT_PATH must be set together");
+    }
+  }
+  return tlsSchema.parse(override);
+}
+
+/**
  * Reads a boolean environment override using common truthy and falsy values.
  */
 function readBooleanOverride(name: string, fallback: boolean): boolean {
@@ -169,4 +223,12 @@ function readBooleanOverride(name: string, fallback: boolean): boolean {
     return false;
   }
   throw new Error(`Invalid ${name} override: ${value}`);
+}
+
+function readOptionalBooleanOverride(name: string): boolean | undefined {
+  const value = process.env[name];
+  if (!value) {
+    return undefined;
+  }
+  return readBooleanOverride(name, false);
 }

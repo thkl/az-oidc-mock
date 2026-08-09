@@ -15,6 +15,7 @@ FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV CONFIG_PATH=/app/config.json
+RUN apk add --no-cache openssl
 RUN corepack enable
 COPY package.json pnpm-lock.yaml* ./
 RUN pnpm install --prod --frozen-lockfile=false

@@ -1,7 +1,9 @@
+import https from "node:https";
 import { createApp } from "./app.js";
 import { loadConfig, watchConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { createSigningKeys } from "./oidc/keys.js";
+import { loadTlsOptions } from "./tls.js";
 const configPath = process.env.CONFIG_PATH ?? "config.json";
 let config = loadConfig(configPath);
 const keys = await createSigningKeys();
@@ -21,10 +23,14 @@ watchConfig(configPath, (reloaded) => {
     });
 });
 const port = Number(process.env.PORT ?? config.port);
-app.listen(port, () => {
+const server = config.tls
+    ? https.createServer(loadTlsOptions(config.tls, configPath), app)
+    : app;
+server.listen(port, () => {
     logger.info("Azure OIDC mock listening", {
         baseUrl: config.baseUrl.replace(/\/$/, ""),
         port,
+        protocol: config.tls ? "https" : "http",
         tenantCount: config.tenants.length,
         verbose: config.verbose
     });
