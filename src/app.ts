@@ -95,18 +95,18 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
       sendAuthorizeError(res, req.query.redirect_uri, req.query.state, validation.error, validation.description);
       return;
     }
-
-    const sessionUser = getSessionUser(req, tenant.tenantId);
-    if (sessionUser) {
-      logger.verbose(config, "authorize request satisfied from existing session", {
-        tenantId: tenant.tenantId,
-        clientId: validation.client.clientId,
-        userSub: sessionUser
-      });
-      redirectWithCode(res, state, tenant.tenantId, validation.client, validation.request, sessionUser);
-      return;
+    if (tenant.enableSessions === true) {
+      const sessionUser = getSessionUser(req, tenant.tenantId);
+      if (sessionUser) {
+        logger.verbose(config, "authorize request satisfied from existing session", {
+          tenantId: tenant.tenantId,
+          clientId: validation.client.clientId,
+          userSub: sessionUser
+        });
+        redirectWithCode(res, state, tenant.tenantId, validation.client, validation.request, sessionUser);
+        return;
+      }
     }
-
     if (req.query.prompt === "none") {
       logger.verbose(config, "silent authorize requires login", {
         tenantId: tenant.tenantId,
@@ -287,16 +287,16 @@ function getTenantOr404(config: AppConfig, req: Request, res: Response): MockTen
  */
 function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
   | {
-      ok: true;
-      client: MockClient;
-      request: {
-        clientId: string;
-        redirectUri: string;
-        scope: string[];
-        state?: string;
-        nonce?: string;
-      };
-    }
+    ok: true;
+    client: MockClient;
+    request: {
+      clientId: string;
+      redirectUri: string;
+      scope: string[];
+      state?: string;
+      nonce?: string;
+    };
+  }
   | { ok: false; error: string; description?: string } {
   if (query.response_type !== "code") {
     return { ok: false, error: "unsupported_response_type", description: "Only response_type=code is supported" };
@@ -420,13 +420,13 @@ async function handleAuthorizationCodeGrant(args: {
 
   const refreshToken = entry.scope.includes("offline_access")
     ? args.state.createRefreshToken({
-        tenantId: args.tenant.tenantId,
-        clientId: args.client.clientId,
-        userSub: user.sub,
-        scope: entry.scope,
-        nonce: entry.nonce,
-        expiresAt: Date.now() + args.config.refreshTokenLifetimeSeconds * 1000
-      })
+      tenantId: args.tenant.tenantId,
+      clientId: args.client.clientId,
+      userSub: user.sub,
+      scope: entry.scope,
+      nonce: entry.nonce,
+      expiresAt: Date.now() + args.config.refreshTokenLifetimeSeconds * 1000
+    })
     : undefined;
 
   await sendTokenSet(args.res, {

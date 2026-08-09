@@ -22,7 +22,8 @@ const tenantSchema = z.object({
   tenantId: z.string().min(1),
   displayName: z.string().min(1),
   clients: z.array(clientSchema).min(1),
-  users: z.array(userSchema).min(1)
+  users: z.array(userSchema).min(1),
+  enableSessions: z.boolean().default(true),
 });
 
 const appConfigSchema = z.object({
