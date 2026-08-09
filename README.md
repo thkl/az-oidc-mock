@@ -25,6 +25,22 @@ PORT=3107 OIDC_MOCK_BASE_URL=http://localhost:3107 pnpm start
 
 `config.json` is watched while the server is running. Valid changes are reloaded automatically for new requests. If a changed file is invalid JSON or fails schema validation, the server keeps using the last valid config and logs the reload error.
 
+Verbose logging can be enabled in `config.json`:
+
+```json
+{
+  "verbose": true
+}
+```
+
+Or by environment variable:
+
+```bash
+OIDC_MOCK_VERBOSE=true pnpm start
+```
+
+Verbose mode logs request timing and OIDC control-flow events. Token and authorization code values are not logged.
+
 ## Docker
 
 ```bash

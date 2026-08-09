@@ -1,4 +1,7 @@
 import { exportJWK, generateKeyPair } from "jose";
+/**
+ * Generates the RSA signing key pair and public JWKS document for this process.
+ */
 export async function createSigningKeys() {
     const kid = "mock-key-1";
     const { privateKey, publicKey } = await generateKeyPair("RS256", { extractable: true });

@@ -5,11 +5,13 @@ import request from "supertest";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { loadConfig, watchConfig, type AppConfig } from "../src/config.js";
+import type { Logger } from "../src/logger.js";
 import { createSigningKeys, type SigningKeys } from "../src/oidc/keys.js";
 
 const config: AppConfig = {
   port: 3000,
   baseUrl: "http://127.0.0.1:3000",
+  verbose: false,
   tokenLifetimeSeconds: 3600,
   refreshTokenLifetimeSeconds: 86400,
   rotateRefreshTokens: true,
@@ -61,6 +63,12 @@ const config: AppConfig = {
 };
 
 let keys: SigningKeys;
+const silentLogger: Logger = {
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+  verbose: () => undefined
+};
 
 beforeEach(async () => {
   keys = await createSigningKeys();
@@ -68,7 +76,7 @@ beforeEach(async () => {
 
 describe("Azure OIDC mock", () => {
   it("serves tenant-specific discovery metadata", async () => {
-    const app = createApp({ config, keys });
+    const app = createApp({ config, keys, logger: silentLogger });
 
     const res = await request(app).get("/common/.well-known/openid-configuration").expect(200);
 
@@ -79,7 +87,7 @@ describe("Azure OIDC mock", () => {
 
   it("uses the latest config provider value for new requests", async () => {
     let currentConfig = config;
-    const app = createApp({ config: () => currentConfig, keys });
+    const app = createApp({ config: () => currentConfig, keys, logger: silentLogger });
 
     await request(app).get("/common/.well-known/openid-configuration").expect(200);
 
@@ -117,7 +125,7 @@ describe("Azure OIDC mock", () => {
   });
 
   it("rejects clients from another tenant", async () => {
-    const app = createApp({ config, keys });
+    const app = createApp({ config, keys, logger: silentLogger });
 
     await request(app)
       .get("/common/oauth2/v2.0/authorize")
@@ -132,7 +140,7 @@ describe("Azure OIDC mock", () => {
   });
 
   it("exchanges an interactive login authorization code for tokens", async () => {
-    const app = createApp({ config, keys });
+    const app = createApp({ config, keys, logger: silentLogger });
 
     const loginPage = await request(app)
       .get("/common/oauth2/v2.0/authorize")
@@ -170,7 +178,7 @@ describe("Azure OIDC mock", () => {
   });
 
   it("renews tokens with a refresh token and rotates it", async () => {
-    const app = createApp({ config, keys });
+    const app = createApp({ config, keys, logger: silentLogger });
     const login = await request(app)
       .post("/common/login")
       .type("form")
@@ -224,9 +232,13 @@ describe("Azure OIDC mock", () => {
     let currentConfig = config;
 
     await fs.writeFile(configPath, JSON.stringify(config), "utf8");
-    const watcher = watchConfig(configPath, (nextConfig) => {
-      currentConfig = nextConfig;
-    });
+    const watcher = watchConfig(
+      configPath,
+      (nextConfig) => {
+        currentConfig = nextConfig;
+      },
+      () => undefined
+    );
 
     try {
       await sleep(600);

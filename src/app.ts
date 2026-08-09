@@ -1,6 +1,7 @@
 import express, { type Request, type Response } from "express";
 import type { AppConfig, MockClient, MockTenant } from "./config.js";
 import { tenantIssuer } from "./config.js";
+import { createLogger, type Logger } from "./logger.js";
 import type { SigningKeys } from "./oidc/keys.js";
 import { OidcState } from "./oidc/state.js";
 import { createAccessToken, createIdToken } from "./oidc/tokens.js";
@@ -17,6 +18,7 @@ import { renderLoginPage } from "./views/login.js";
 type AppDeps = {
   config: AppConfig | (() => AppConfig);
   keys: SigningKeys;
+  logger?: Logger;
   state?: OidcState;
 };
 
@@ -30,12 +32,27 @@ type AuthorizeQuery = {
   prompt?: string;
 };
 
-export function createApp({ config, keys, state = new OidcState() }: AppDeps): express.Express {
+/**
+ * Creates the Express application and wires all tenant-aware OIDC routes.
+ */
+export function createApp({ config, keys, logger = createLogger(), state = new OidcState() }: AppDeps): express.Express {
   const app = express();
   const getConfig = typeof config === "function" ? config : () => config;
   app.disable("x-powered-by");
   app.use(express.urlencoded({ extended: false }));
   app.use(express.json());
+  app.use((req, res, next) => {
+    const startedAt = Date.now();
+    res.on("finish", () => {
+      logger.verbose(getConfig(), "request completed", {
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        durationMs: Date.now() - startedAt
+      });
+    });
+    next();
+  });
 
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
@@ -45,6 +62,7 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
     const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
+    logger.verbose(config, "serving discovery document", { tenantId: tenant.tenantId });
 
     const base = config.baseUrl.replace(/\/$/, "");
     const tenantBase = `${base}/${encodeURIComponent(tenant.tenantId)}/oauth2/v2.0`;
@@ -80,6 +98,7 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
     const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
+    logger.verbose(config, "serving jwks", { tenantId: tenant.tenantId, keyCount: keys.jwks.keys.length });
     res.json(keys.jwks);
   });
 
@@ -87,20 +106,39 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
     const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
+    logger.verbose(config, "authorize request received", {
+      tenantId: tenant.tenantId,
+      clientId: req.query.client_id,
+      prompt: req.query.prompt
+    });
 
     const validation = validateAuthorizeRequest(tenant, req.query as AuthorizeQuery);
     if (!validation.ok) {
+      logger.warn("authorize request rejected", {
+        tenantId: tenant.tenantId,
+        error: validation.error,
+        description: validation.description
+      });
       sendAuthorizeError(res, req.query.redirect_uri, req.query.state, validation.error, validation.description);
       return;
     }
 
     const sessionUser = getSessionUser(req, tenant.tenantId);
     if (sessionUser) {
+      logger.verbose(config, "authorize request satisfied from existing session", {
+        tenantId: tenant.tenantId,
+        clientId: validation.client.clientId,
+        userSub: sessionUser
+      });
       redirectWithCode(res, state, tenant.tenantId, validation.client, validation.request, sessionUser);
       return;
     }
 
     if (req.query.prompt === "none") {
+      logger.verbose(config, "silent authorize requires login", {
+        tenantId: tenant.tenantId,
+        clientId: validation.client.clientId
+      });
       sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "login_required");
       return;
     }
@@ -121,20 +159,32 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
     const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
+    logger.verbose(config, "login form submitted", { tenantId: tenant.tenantId, clientId: req.body.client_id });
 
     const validation = validateAuthorizeRequest(tenant, req.body as AuthorizeQuery);
     if (!validation.ok) {
+      logger.warn("login request rejected", {
+        tenantId: tenant.tenantId,
+        error: validation.error,
+        description: validation.description
+      });
       sendAuthorizeError(res, req.body.redirect_uri, req.body.state, validation.error, validation.description);
       return;
     }
 
     const userSub = readString(req.body.user_sub);
     if (!userSub || !findUser(tenant, userSub)) {
+      logger.warn("login rejected for unknown user", { tenantId: tenant.tenantId, userSub });
       sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "access_denied", "Unknown user");
       return;
     }
 
     setSessionUser(res, tenant.tenantId, userSub);
+    logger.info("mock user selected", {
+      tenantId: tenant.tenantId,
+      clientId: validation.client.clientId,
+      userSub
+    });
     redirectWithCode(res, state, tenant.tenantId, validation.client, validation.request, userSub);
   });
 
@@ -142,23 +192,37 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
     const config = getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
+    logger.verbose(config, "token request received", {
+      tenantId: tenant.tenantId,
+      grantType: req.body.grant_type,
+      clientId: req.body.client_id
+    });
 
     const client = authenticateClient(tenant, req);
     if (!client) {
+      logger.warn("token request rejected due to client authentication failure", {
+        tenantId: tenant.tenantId,
+        clientId: req.body.client_id
+      });
       sendTokenError(res, "invalid_client", "Client authentication failed", 401);
       return;
     }
 
     const grantType = readString(req.body.grant_type);
     if (grantType === "authorization_code") {
-      await handleAuthorizationCodeGrant({ config, keys, state, tenant, client, req, res });
+      await handleAuthorizationCodeGrant({ config, keys, logger, state, tenant, client, req, res });
       return;
     }
     if (grantType === "refresh_token") {
-      await handleRefreshTokenGrant({ config, keys, state, tenant, client, req, res });
+      await handleRefreshTokenGrant({ config, keys, logger, state, tenant, client, req, res });
       return;
     }
 
+    logger.warn("token request used unsupported grant type", {
+      tenantId: tenant.tenantId,
+      clientId: client.clientId,
+      grantType
+    });
     sendTokenError(res, "unsupported_grant_type", "Only authorization_code and refresh_token are supported");
   });
 
@@ -167,6 +231,7 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
     clearSessionUser(res, tenant.tenantId);
+    logger.info("mock session cleared", { tenantId: tenant.tenantId });
     const redirect = readString(req.query.post_logout_redirect_uri);
     if (redirect) {
       res.redirect(redirect);
@@ -178,6 +243,9 @@ export function createApp({ config, keys, state = new OidcState() }: AppDeps): e
   return app;
 }
 
+/**
+ * Resolves the requested tenant or sends a 404 response.
+ */
 function getTenantOr404(config: AppConfig, req: Request, res: Response): MockTenant | undefined {
   const tenant = findTenant(config, req.params.tenantId);
   if (!tenant) {
@@ -186,6 +254,9 @@ function getTenantOr404(config: AppConfig, req: Request, res: Response): MockTen
   return tenant;
 }
 
+/**
+ * Validates the OAuth authorization request before login or code issuance.
+ */
 function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
   | {
       ok: true;
@@ -239,6 +310,9 @@ function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
   };
 }
 
+/**
+ * Issues an authorization code and redirects the browser back to the client.
+ */
 function redirectWithCode(
   res: Response,
   oidcState: OidcState,
@@ -266,9 +340,13 @@ function redirectWithCode(
   res.redirect(redirectUrl.toString());
 }
 
+/**
+ * Exchanges a valid authorization code for token response fields.
+ */
 async function handleAuthorizationCodeGrant(args: {
   config: AppConfig;
   keys: SigningKeys;
+  logger: Logger;
   state: OidcState;
   tenant: MockTenant;
   client: MockClient;
@@ -278,6 +356,10 @@ async function handleAuthorizationCodeGrant(args: {
   const code = readString(args.req.body.code);
   const redirectUri = readString(args.req.body.redirect_uri);
   if (!code || !redirectUri) {
+    args.logger.warn("authorization code grant rejected because required fields are missing", {
+      tenantId: args.tenant.tenantId,
+      clientId: args.client.clientId
+    });
     sendTokenError(args.res, "invalid_request", "code and redirect_uri are required");
     return;
   }
@@ -289,12 +371,21 @@ async function handleAuthorizationCodeGrant(args: {
     entry.clientId !== args.client.clientId ||
     entry.redirectUri !== redirectUri
   ) {
+    args.logger.warn("authorization code grant rejected", {
+      tenantId: args.tenant.tenantId,
+      clientId: args.client.clientId
+    });
     sendTokenError(args.res, "invalid_grant", "Authorization code is invalid or expired");
     return;
   }
 
   const user = findUser(args.tenant, entry.userSub);
   if (!user) {
+    args.logger.warn("authorization code grant rejected because user is missing", {
+      tenantId: args.tenant.tenantId,
+      clientId: args.client.clientId,
+      userSub: entry.userSub
+    });
     sendTokenError(args.res, "invalid_grant", "User no longer exists");
     return;
   }
@@ -321,11 +412,21 @@ async function handleAuthorizationCodeGrant(args: {
     nonce: entry.nonce,
     refreshToken
   });
+  args.logger.info("authorization code grant completed", {
+    tenantId: args.tenant.tenantId,
+    clientId: args.client.clientId,
+    userSub: user.sub,
+    refreshTokenIssued: Boolean(refreshToken)
+  });
 }
 
+/**
+ * Exchanges a valid refresh token for fresh token response fields.
+ */
 async function handleRefreshTokenGrant(args: {
   config: AppConfig;
   keys: SigningKeys;
+  logger: Logger;
   state: OidcState;
   tenant: MockTenant;
   client: MockClient;
@@ -334,18 +435,31 @@ async function handleRefreshTokenGrant(args: {
 }): Promise<void> {
   const token = readString(args.req.body.refresh_token);
   if (!token) {
+    args.logger.warn("refresh token grant rejected because refresh_token is missing", {
+      tenantId: args.tenant.tenantId,
+      clientId: args.client.clientId
+    });
     sendTokenError(args.res, "invalid_request", "refresh_token is required");
     return;
   }
 
   const entry = args.state.getRefreshToken(token);
   if (!entry || entry.tenantId !== args.tenant.tenantId || entry.clientId !== args.client.clientId) {
+    args.logger.warn("refresh token grant rejected", {
+      tenantId: args.tenant.tenantId,
+      clientId: args.client.clientId
+    });
     sendTokenError(args.res, "invalid_grant", "Refresh token is invalid or expired");
     return;
   }
 
   const user = findUser(args.tenant, entry.userSub);
   if (!user) {
+    args.logger.warn("refresh token grant rejected because user is missing", {
+      tenantId: args.tenant.tenantId,
+      clientId: args.client.clientId,
+      userSub: entry.userSub
+    });
     sendTokenError(args.res, "invalid_grant", "User no longer exists");
     return;
   }
@@ -374,8 +488,17 @@ async function handleRefreshTokenGrant(args: {
     nonce: entry.nonce,
     refreshToken
   });
+  args.logger.info("refresh token grant completed", {
+    tenantId: args.tenant.tenantId,
+    clientId: args.client.clientId,
+    userSub: user.sub,
+    refreshTokenRotated: args.config.rotateRefreshTokens
+  });
 }
 
+/**
+ * Signs and sends the JSON token response.
+ */
 async function sendTokenSet(
   res: Response,
   args: {
@@ -410,6 +533,9 @@ async function sendTokenSet(
   });
 }
 
+/**
+ * Authenticates a confidential or public client from body or Basic auth.
+ */
 function authenticateClient(tenant: MockTenant, req: Request): MockClient | undefined {
   const basic = parseBasicAuth(req);
   const clientId = basic?.clientId ?? readString(req.body.client_id);
@@ -430,6 +556,9 @@ function authenticateClient(tenant: MockTenant, req: Request): MockClient | unde
   return client;
 }
 
+/**
+ * Parses OAuth client credentials from an HTTP Basic authorization header.
+ */
 function parseBasicAuth(req: Request): { clientId: string; clientSecret: string } | undefined {
   const header = req.header("authorization");
   if (!header?.startsWith("Basic ")) {
@@ -446,10 +575,16 @@ function parseBasicAuth(req: Request): { clientId: string; clientSecret: string 
   };
 }
 
+/**
+ * Reads the selected user from the tenant-specific mock session cookie.
+ */
 function getSessionUser(req: Request, tenantId: string): string | undefined {
   return parseCookies(req.header("cookie"))[`az_oidc_mock_${tenantId}`];
 }
 
+/**
+ * Stores the selected user in a tenant-specific mock session cookie.
+ */
 function setSessionUser(res: Response, tenantId: string, userSub: string): void {
   res.cookie(`az_oidc_mock_${tenantId}`, userSub, {
     httpOnly: true,
@@ -459,6 +594,9 @@ function setSessionUser(res: Response, tenantId: string, userSub: string): void 
   });
 }
 
+/**
+ * Clears the tenant-specific mock session cookie.
+ */
 function clearSessionUser(res: Response, tenantId: string): void {
   res.clearCookie(`az_oidc_mock_${tenantId}`, {
     httpOnly: true,
@@ -467,6 +605,9 @@ function clearSessionUser(res: Response, tenantId: string): void {
   });
 }
 
+/**
+ * Parses the Cookie header into a name/value object.
+ */
 function parseCookies(header?: string): Record<string, string> {
   if (!header) return {};
   return Object.fromEntries(
@@ -478,6 +619,9 @@ function parseCookies(header?: string): Record<string, string> {
   );
 }
 
+/**
+ * Sends an OAuth authorization error by redirect when possible.
+ */
 function sendAuthorizeError(
   res: Response,
   redirectUri: unknown,
@@ -501,18 +645,30 @@ function sendAuthorizeError(
   res.status(400).json({ error, ...(description ? { error_description: description } : {}) });
 }
 
+/**
+ * Sends an OAuth token endpoint error response.
+ */
 function sendTokenError(res: Response, error: string, description: string, status = 400): void {
   res.status(status).json({ error, error_description: description });
 }
 
+/**
+ * Converts non-empty string input values and ignores all other values.
+ */
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/**
+ * Normalizes empty optional string values to undefined.
+ */
 function emptyToUndefined(value?: string): string | undefined {
   return value && value.length > 0 ? value : undefined;
 }
 
+/**
+ * Checks whether a string is an absolute URL.
+ */
 function isUrl(value: string): boolean {
   try {
     new URL(value);
@@ -522,6 +678,9 @@ function isUrl(value: string): boolean {
   }
 }
 
+/**
+ * Returns the union of all scopes supported by clients in a tenant.
+ */
 function tenantScopes(tenant: MockTenant): string[] {
   return [...new Set(tenant.clients.flatMap((client) => client.allowedScopes))].sort();
 }

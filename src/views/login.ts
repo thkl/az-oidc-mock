@@ -1,5 +1,8 @@
 import type { MockTenant } from "../config.js";
 
+/**
+ * Renders the mock user picker page for an authorization request.
+ */
 export function renderLoginPage(tenant: MockTenant, params: Record<string, string>): string {
   const hiddenFields = Object.entries(params)
     .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
@@ -50,6 +53,9 @@ export function renderLoginPage(tenant: MockTenant, params: Record<string, strin
 </html>`;
 }
 
+/**
+ * Escapes dynamic text before placing it into the login page HTML.
+ */
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -57,4 +63,3 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 }
-

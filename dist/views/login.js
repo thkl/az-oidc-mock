@@ -1,3 +1,6 @@
+/**
+ * Renders the mock user picker page for an authorization request.
+ */
 export function renderLoginPage(tenant, params) {
     const hiddenFields = Object.entries(params)
         .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
@@ -43,6 +46,9 @@ export function renderLoginPage(tenant, params) {
 </body>
 </html>`;
 }
+/**
+ * Escapes dynamic text before placing it into the login page HTML.
+ */
 function escapeHtml(value) {
     return value
         .replaceAll("&", "&amp;")

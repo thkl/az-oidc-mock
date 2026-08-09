@@ -28,6 +28,7 @@ const tenantSchema = z.object({
 const appConfigSchema = z.object({
   port: z.number().int().positive().default(3000),
   baseUrl: z.string().url(),
+  verbose: z.boolean().default(false),
   tokenLifetimeSeconds: z.number().int().positive().default(3600),
   refreshTokenLifetimeSeconds: z.number().int().positive().default(86400),
   rotateRefreshTokens: z.boolean().default(true),
@@ -43,6 +44,9 @@ export type ConfigWatcher = {
   close: () => void;
 };
 
+/**
+ * Loads, validates, and normalizes the JSON configuration file.
+ */
 export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"): AppConfig {
   const resolved = path.resolve(configPath);
   const raw = fs.readFileSync(resolved, "utf8");
@@ -67,11 +71,19 @@ export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"
   return {
     ...parsed,
     port: readPortOverride(parsed.port),
-    baseUrl: readBaseUrlOverride(parsed.baseUrl)
+    baseUrl: readBaseUrlOverride(parsed.baseUrl),
+    verbose: readBooleanOverride("OIDC_MOCK_VERBOSE", parsed.verbose)
   };
 }
 
-export function watchConfig(configPath: string, onReload: (config: AppConfig) => void): ConfigWatcher {
+/**
+ * Watches the configuration file and emits only successfully parsed configs.
+ */
+export function watchConfig(
+  configPath: string,
+  onReload: (config: AppConfig) => void,
+  onError: (error: unknown) => void = console.error
+): ConfigWatcher {
   const resolved = path.resolve(configPath);
   let lastMtimeMs = fs.statSync(resolved).mtimeMs;
 
@@ -87,10 +99,8 @@ export function watchConfig(configPath: string, onReload: (config: AppConfig) =>
 
     try {
       onReload(loadConfig(resolved));
-      console.log(`Reloaded config from ${resolved}`);
     } catch (error) {
-      console.error(`Failed to reload config from ${resolved}`);
-      console.error(error);
+      onError(error);
     }
   });
 
@@ -101,10 +111,16 @@ export function watchConfig(configPath: string, onReload: (config: AppConfig) =>
   };
 }
 
+/**
+ * Builds the Azure v2.0-style issuer value for a tenant.
+ */
 export function tenantIssuer(config: AppConfig, tenantId: string): string {
   return `${config.baseUrl.replace(/\/$/, "")}/${tenantId}/v2.0`;
 }
 
+/**
+ * Reads and validates the optional numeric port override.
+ */
 function readPortOverride(fallback: number): number {
   if (!process.env.PORT) {
     return fallback;
@@ -116,6 +132,9 @@ function readPortOverride(fallback: number): number {
   return port;
 }
 
+/**
+ * Reads and validates the optional base URL override.
+ */
 function readBaseUrlOverride(fallback: string): string {
   const override = process.env.OIDC_MOCK_BASE_URL ?? process.env.BASE_URL;
   if (!override) {
@@ -131,4 +150,22 @@ function readBaseUrlOverride(fallback: string): string {
     }
     return fallback;
   }
+}
+
+/**
+ * Reads a boolean environment override using common truthy and falsy values.
+ */
+function readBooleanOverride(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  if (!value) {
+    return fallback;
+  }
+
+  if (["1", "true", "yes", "on"].includes(value.toLowerCase())) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(value.toLowerCase())) {
+    return false;
+  }
+  throw new Error(`Invalid ${name} override: ${value}`);
 }
