@@ -11,6 +11,12 @@ export function findClient(tenant, clientId) {
     return tenant.clients.find((client) => client.clientId === clientId);
 }
 /**
+ * Finds a registered device inside a tenant.
+ */
+export function findDevice(tenant, deviceId) {
+    return tenant.devices.find((device) => device.deviceId === deviceId);
+}
+/**
  * Finds a user inside a tenant by subject identifier.
  */
 export function findUser(tenant, sub) {

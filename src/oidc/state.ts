@@ -7,6 +7,7 @@ export type AuthorizationRequest = {
   scope: string[];
   state?: string;
   nonce?: string;
+  deviceId?: string;
 };
 
 export type AuthorizationCode = AuthorizationRequest & {
@@ -22,6 +23,7 @@ export type RefreshToken = {
   userSub: string;
   scope: string[];
   nonce?: string;
+  deviceId?: string;
   expiresAt: number;
 };
 

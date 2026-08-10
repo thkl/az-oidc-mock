@@ -11,11 +11,18 @@ const userSchema = z.object({
   claims: z.record(z.string(), z.unknown()).default({})
 });
 
+const deviceSchema = z.object({
+  deviceId: z.string().min(1),
+  displayName: z.string().min(1),
+  enabled: z.boolean().default(true)
+});
+
 const clientSchema = z.object({
   clientId: z.string().min(1),
   clientSecret: z.string().optional(),
   redirectUris: z.array(z.string().url()).min(1),
-  allowedScopes: z.array(z.string()).default(["openid", "profile", "email"])
+  allowedScopes: z.array(z.string()).default(["openid", "profile", "email"]),
+  enabled: z.boolean().default(true)
 });
 
 const tenantSchema = z.object({
@@ -23,6 +30,7 @@ const tenantSchema = z.object({
   displayName: z.string().min(1),
   clients: z.array(clientSchema).min(1),
   users: z.array(userSchema).min(1),
+  devices: z.array(deviceSchema).default([]),
   enableSessions: z.boolean().default(true),
 });
 
@@ -59,6 +67,7 @@ const appConfigSchema = z.object({
 });
 
 export type MockUser = z.infer<typeof userSchema>;
+export type MockDevice = z.infer<typeof deviceSchema>;
 export type MockClient = z.infer<typeof clientSchema>;
 export type MockTenant = z.infer<typeof tenantSchema>;
 export type AppConfig = z.infer<typeof appConfigSchema>;
@@ -88,6 +97,14 @@ export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"
         throw new Error(`Duplicate clientId "${client.clientId}" in tenant "${tenant.tenantId}"`);
       }
       clientIds.add(client.clientId);
+    }
+
+    const deviceIds = new Set<string>();
+    for (const device of tenant.devices) {
+      if (deviceIds.has(device.deviceId)) {
+        throw new Error(`Duplicate deviceId "${device.deviceId}" in tenant "${tenant.tenantId}"`);
+      }
+      deviceIds.add(device.deviceId);
     }
   }
 

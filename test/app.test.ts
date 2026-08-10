@@ -25,7 +25,15 @@ const config: AppConfig = {
           clientId: "local-app",
           clientSecret: "local-secret",
           redirectUris: ["http://app.test/callback"],
-          allowedScopes: ["openid", "profile", "email", "offline_access"]
+          allowedScopes: ["openid", "profile", "email", "offline_access"],
+          enabled: true
+        }
+      ],
+      devices: [
+        {
+          deviceId: "machine-1",
+          displayName: "Build Agent 1",
+          enabled: true
         }
       ],
       users: [
@@ -46,9 +54,11 @@ const config: AppConfig = {
         {
           clientId: "contoso-app",
           redirectUris: ["http://contoso.test/callback"],
-          allowedScopes: ["openid", "profile"]
+          allowedScopes: ["openid", "profile"],
+          enabled: true
         }
       ],
+      devices: [],
       users: [
         {
           sub: "contoso-user-1",
@@ -116,9 +126,11 @@ describe("Azure OIDC mock", () => {
             {
               clientId: "new-app",
               redirectUris: ["http://new.test/callback"],
-              allowedScopes: ["openid"]
+              allowedScopes: ["openid"],
+              enabled: true
             }
           ],
+          devices: [],
           users: [
             {
               sub: "new-user",
@@ -190,6 +202,99 @@ describe("Azure OIDC mock", () => {
     expect(token.body.refresh_token).toBeTruthy();
   });
 
+  it("verifies an issued access token through the internal endpoint", async () => {
+    const app = createApp({ config, keys, logger: silentLogger });
+    const token = await issueAccessToken(app);
+
+    const verified = await request(app)
+      .post("/common/internal/token/verify")
+      .set("authorization", `Bearer ${token}`)
+      .send({ audience: "local-app" })
+      .expect(200);
+
+    expect(verified.body.active).toBe(true);
+    expect(verified.body.tenant_id).toBe("common");
+    expect(verified.body.client_id).toBe("local-app");
+    expect(verified.body.user_sub).toBe("user-1");
+    expect(verified.body.claims.sub).toBe("user-1");
+    expect(verified.body.claims.aud).toBe("local-app");
+    expect(verified.body.claims.deviceid).toBe("machine-1");
+    expect(verified.body.claims.scp).toBe("profile email offline_access");
+  });
+
+  it("rejects access token verification for the wrong audience", async () => {
+    const app = createApp({ config, keys, logger: silentLogger });
+    const token = await issueAccessToken(app);
+
+    const verified = await request(app)
+      .post("/common/internal/token/verify")
+      .send({ token, audience: "another-service" })
+      .expect(401);
+
+    expect(verified.body.active).toBe(false);
+    expect(verified.body.error).toBe("invalid_token");
+  });
+
+  it("rejects an issued access token after the client is disabled", async () => {
+    let currentConfig = config;
+    const app = createApp({ config: () => currentConfig, keys, logger: silentLogger });
+    const token = await issueAccessToken(app);
+
+    currentConfig = {
+      ...config,
+      tenants: [
+        {
+          ...config.tenants[0],
+          clients: [
+            {
+              ...config.tenants[0].clients[0],
+              enabled: false
+            }
+          ]
+        },
+        config.tenants[1]
+      ]
+    };
+
+    const verified = await request(app)
+      .post("/common/internal/token/verify")
+      .send({ token, audience: "local-app" })
+      .expect(401);
+
+    expect(verified.body.active).toBe(false);
+    expect(verified.body.error).toBe("invalid_token");
+    expect(verified.body.error_description).toBe("Token audience client is disabled");
+  });
+
+  it("rejects an issued access token after the original login device is disabled", async () => {
+    let currentConfig = config;
+    const app = createApp({ config: () => currentConfig, keys, logger: silentLogger });
+    const token = await issueAccessToken(app);
+
+    currentConfig = disableCommonDevice();
+
+    const verified = await request(app)
+      .post("/common/internal/token/verify")
+      .send({ token, audience: "local-app" })
+      .expect(401);
+
+    expect(verified.body.active).toBe(false);
+    expect(verified.body.error).toBe("invalid_token");
+    expect(verified.body.error_description).toBe("Token device is disabled");
+  });
+
+  it("rejects malformed access tokens through the internal endpoint", async () => {
+    const app = createApp({ config, keys, logger: silentLogger });
+
+    const verified = await request(app)
+      .post("/common/internal/token/verify")
+      .set("authorization", "Bearer not-a-jwt")
+      .expect(401);
+
+    expect(verified.body.active).toBe(false);
+    expect(verified.body.error).toBe("invalid_token");
+  });
+
   it("renews tokens with a refresh token and rotates it", async () => {
     const app = createApp({ config, keys, logger: silentLogger });
     const login = await request(app)
@@ -237,6 +342,28 @@ describe("Azure OIDC mock", () => {
         refresh_token: first.body.refresh_token
       })
       .expect(400);
+  });
+
+  it("rejects refresh token renewal after the original login device is disabled", async () => {
+    let currentConfig = config;
+    const app = createApp({ config: () => currentConfig, keys, logger: silentLogger });
+    const first = await issueTokenSet(app);
+
+    currentConfig = disableCommonDevice();
+
+    const refreshed = await request(app)
+      .post("/common/oauth2/v2.0/token")
+      .type("form")
+      .send({
+        grant_type: "refresh_token",
+        client_id: "local-app",
+        client_secret: "local-secret",
+        refresh_token: first.body.refresh_token
+      })
+      .expect(400);
+
+    expect(refreshed.body.error).toBe("invalid_grant");
+    expect(refreshed.body.error_description).toBe("Device used for original sign-in is inactive");
   });
 
   it("watches a config file and reloads valid changes", async () => {
@@ -348,6 +475,52 @@ function authorizeQuery() {
     scope: "openid profile email offline_access",
     state: "state-1",
     nonce: "nonce-1"
+  };
+}
+
+async function issueAccessToken(app: ReturnType<typeof createApp>): Promise<string> {
+  const token = await issueTokenSet(app);
+  return token.body.access_token;
+}
+
+async function issueTokenSet(app: ReturnType<typeof createApp>): Promise<request.Response> {
+  const login = await request(app)
+    .post("/common/login")
+    .type("form")
+    .send({ ...authorizeQuery(), user_sub: "user-1" })
+    .expect(302);
+  const code = new URL(login.header.location).searchParams.get("code");
+
+  const token = await request(app)
+    .post("/common/oauth2/v2.0/token")
+    .type("form")
+    .send({
+      grant_type: "authorization_code",
+      client_id: "local-app",
+      client_secret: "local-secret",
+      code,
+      redirect_uri: "http://app.test/callback"
+    })
+    .expect(200);
+
+  return token;
+}
+
+function disableCommonDevice(): AppConfig {
+  return {
+    ...config,
+    tenants: [
+      {
+        ...config.tenants[0],
+        devices: [
+          {
+            ...config.tenants[0].devices[0],
+            enabled: false
+          }
+        ]
+      },
+      config.tenants[1]
+    ]
   };
 }
 

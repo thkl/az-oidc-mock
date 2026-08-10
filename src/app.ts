@@ -4,9 +4,10 @@ import { tenantIssuer } from "./config.js";
 import { createLogger, type Logger } from "./logger.js";
 import type { SigningKeys } from "./oidc/keys.js";
 import { OidcState } from "./oidc/state.js";
-import { createAccessToken, createIdToken } from "./oidc/tokens.js";
+import { createAccessToken, createIdToken, verifyAccessToken } from "./oidc/tokens.js";
 import {
   findClient,
+  findDevice,
   findTenant,
   findUser,
   parseScopes,
@@ -30,6 +31,7 @@ type AuthorizeQuery = {
   state?: string;
   nonce?: string;
   prompt?: string;
+  device_id?: string;
 };
 
 /**
@@ -126,7 +128,8 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
         response_type: "code",
         scope: validation.request.scope.join(" "),
         state: validation.request.state ?? "",
-        nonce: validation.request.nonce ?? ""
+        nonce: validation.request.nonce ?? "",
+        device_id: validation.request.deviceId ?? ""
       })
     );
   });
@@ -200,6 +203,72 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
       grantType
     });
     sendTokenError(res, "unsupported_grant_type", "Only authorization_code and refresh_token are supported");
+  });
+
+  app.post("/:tenantId/internal/token/verify", async (req, res) => {
+    const config = getConfig();
+    const tenant = getTenantOr404(config, req, res);
+    if (!tenant) return;
+
+    const body = readObjectBody(req);
+    const token = readBearerToken(req) ?? readString(body.token) ?? readString(body.access_token);
+    const audience = readString(body.audience) ?? readString(body.client_id);
+    if (!token) {
+      res.status(400).json({
+        active: false,
+        error: "invalid_request",
+        error_description: "Bearer token or token body field is required"
+      });
+      return;
+    }
+
+    const verification = await verifyAccessToken({ config, keys, tenant, token, audience });
+    if (!verification.ok) {
+      logger.warn("internal token verification failed", {
+        tenantId: tenant.tenantId,
+        error: verification.error
+      });
+      res.status(401).json({
+        active: false,
+        error: verification.error,
+        error_description: verification.description
+      });
+      return;
+    }
+
+    const client = findClient(tenant, String(verification.claims.aud));
+    const user = findUser(tenant, String(verification.claims.sub));
+    const device = typeof verification.claims.deviceid === "string"
+      ? findDevice(tenant, verification.claims.deviceid)
+      : undefined;
+    if (!client || !client.enabled || !user || isInactiveTokenDevice(tenant, verification.claims.deviceid, device)) {
+      logger.warn("internal token verification rejected unknown claims", {
+        tenantId: tenant.tenantId,
+        audience: verification.claims.aud,
+        subject: verification.claims.sub,
+        deviceId: verification.claims.deviceid
+      });
+      res.status(401).json({
+        active: false,
+        error: "invalid_token",
+        error_description: describeInactiveTokenSubject(tenant, client, user, verification.claims.deviceid, device)
+      });
+      return;
+    }
+
+    logger.verbose(config, "internal token verification succeeded", {
+      tenantId: tenant.tenantId,
+      clientId: client.clientId,
+      userSub: user.sub
+    });
+    res.json({
+      active: true,
+      tenant_id: tenant.tenantId,
+      client_id: client.clientId,
+      user_sub: user.sub,
+      ...(device ? { device_id: device.deviceId } : {}),
+      claims: verification.claims
+    });
   });
 
   app.get("/:tenantId/oauth2/v2.0/logout", (req, res) => {
@@ -298,6 +367,7 @@ function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
       scope: string[];
       state?: string;
       nonce?: string;
+      deviceId?: string;
     };
   }
   | { ok: false; error: string; description?: string } {
@@ -315,6 +385,9 @@ function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
   if (!client) {
     return { ok: false, error: "unauthorized_client", description: "Unknown client for tenant" };
   }
+  if (!client.enabled) {
+    return { ok: false, error: "unauthorized_client", description: "Client is disabled" };
+  }
 
   if (!validateRedirectUri(client, redirectUri)) {
     return { ok: false, error: "invalid_request", description: "redirect_uri is not registered for client" };
@@ -328,6 +401,11 @@ function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
     return { ok: false, error: "invalid_scope", description: "Requested scope is not allowed for client" };
   }
 
+  const device = resolveRequestedDevice(tenant, query.device_id);
+  if (!device.ok) {
+    return { ok: false, error: "access_denied", description: device.description };
+  }
+
   return {
     ok: true,
     client,
@@ -336,9 +414,29 @@ function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
       redirectUri,
       scope,
       state: emptyToUndefined(query.state),
-      nonce: emptyToUndefined(query.nonce)
+      nonce: emptyToUndefined(query.nonce),
+      deviceId: device.deviceId
     }
   };
+}
+
+function resolveRequestedDevice(
+  tenant: MockTenant,
+  requestedDeviceId?: string
+): { ok: true; deviceId?: string } | { ok: false; description: string } {
+  if (requestedDeviceId) {
+    const device = findDevice(tenant, requestedDeviceId);
+    if (!device) {
+      return { ok: false, description: "Unknown device for tenant" };
+    }
+    if (!device.enabled) {
+      return { ok: false, description: "Device is disabled" };
+    }
+    return { ok: true, deviceId: device.deviceId };
+  }
+
+  const activeDevice = tenant.devices.find((device) => device.enabled);
+  return { ok: true, deviceId: activeDevice?.deviceId };
 }
 
 /**
@@ -349,7 +447,7 @@ function redirectWithCode(
   oidcState: OidcState,
   tenantId: string,
   client: MockClient,
-  request: { redirectUri: string; scope: string[]; state?: string; nonce?: string },
+  request: { redirectUri: string; scope: string[]; state?: string; nonce?: string; deviceId?: string },
   userSub: string
 ): void {
   const code = oidcState.createCode(
@@ -359,7 +457,8 @@ function redirectWithCode(
       redirectUri: request.redirectUri,
       scope: request.scope,
       state: request.state,
-      nonce: request.nonce
+      nonce: request.nonce,
+      deviceId: request.deviceId
     },
     userSub
   );
@@ -428,6 +527,7 @@ async function handleAuthorizationCodeGrant(args: {
       userSub: user.sub,
       scope: entry.scope,
       nonce: entry.nonce,
+      deviceId: entry.deviceId,
       expiresAt: Date.now() + args.config.refreshTokenLifetimeSeconds * 1000
     })
     : undefined;
@@ -441,6 +541,7 @@ async function handleAuthorizationCodeGrant(args: {
     user,
     scope: entry.scope,
     nonce: entry.nonce,
+    deviceId: entry.deviceId,
     refreshToken
   });
   args.logger.info("authorization code grant completed", {
@@ -495,6 +596,18 @@ async function handleRefreshTokenGrant(args: {
     return;
   }
 
+  const device = entry.deviceId ? findDevice(args.tenant, entry.deviceId) : undefined;
+  if (isInactiveRefreshTokenDevice(args.tenant, entry.deviceId, device)) {
+    args.logger.warn("refresh token grant rejected because device is inactive", {
+      tenantId: args.tenant.tenantId,
+      clientId: args.client.clientId,
+      userSub: entry.userSub,
+      deviceId: entry.deviceId
+    });
+    sendTokenError(args.res, "invalid_grant", "Device used for original sign-in is inactive");
+    return;
+  }
+
   let refreshToken = token;
   if (args.config.rotateRefreshTokens) {
     args.state.revokeRefreshToken(token);
@@ -504,6 +617,7 @@ async function handleRefreshTokenGrant(args: {
       userSub: entry.userSub,
       scope: entry.scope,
       nonce: entry.nonce,
+      deviceId: entry.deviceId,
       expiresAt: Date.now() + args.config.refreshTokenLifetimeSeconds * 1000
     });
   }
@@ -517,6 +631,7 @@ async function handleRefreshTokenGrant(args: {
     user,
     scope: entry.scope,
     nonce: entry.nonce,
+    deviceId: entry.deviceId,
     refreshToken
   });
   args.logger.info("refresh token grant completed", {
@@ -541,6 +656,7 @@ async function sendTokenSet(
     user: NonNullable<ReturnType<typeof findUser>>;
     scope: string[];
     nonce?: string;
+    deviceId?: string;
     refreshToken?: string;
   }
 ): Promise<void> {
@@ -551,7 +667,8 @@ async function sendTokenSet(
     client: args.client,
     user: args.user,
     scope: args.scope,
-    nonce: args.nonce
+    nonce: args.nonce,
+    deviceId: args.deviceId
   };
 
   res.json({
@@ -576,7 +693,7 @@ function authenticateClient(tenant: MockTenant, req: Request): MockClient | unde
   }
 
   const client = findClient(tenant, clientId);
-  if (!client) {
+  if (!client || !client.enabled) {
     return undefined;
   }
 
@@ -604,6 +721,68 @@ function parseBasicAuth(req: Request): { clientId: string; clientSecret: string 
     clientId: decodeURIComponent(decoded.slice(0, separator)),
     clientSecret: decodeURIComponent(decoded.slice(separator + 1))
   };
+}
+
+/**
+ * Reads a bearer token from the Authorization header.
+ */
+function readBearerToken(req: Request): string | undefined {
+  const header = req.header("authorization");
+  if (!header?.startsWith("Bearer ")) {
+    return undefined;
+  }
+  return readString(header.slice("Bearer ".length).trim());
+}
+
+/**
+ * Reads object-like request bodies and ignores missing or scalar payloads.
+ */
+function readObjectBody(req: Request): Record<string, unknown> {
+  return req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+}
+
+function describeInactiveTokenSubject(
+  tenant: MockTenant,
+  client: MockClient | undefined,
+  user: NonNullable<ReturnType<typeof findUser>> | undefined,
+  deviceId: unknown,
+  device: NonNullable<ReturnType<typeof findDevice>> | undefined
+): string {
+  if (!client) {
+    return "Token audience is not a configured client";
+  }
+  if (!client.enabled) {
+    return "Token audience client is disabled";
+  }
+  if (!user) {
+    return "Token subject is not a configured user";
+  }
+  if (isInactiveTokenDevice(tenant, deviceId, device)) {
+    return !device ? "Token device is not a configured device" : "Token device is disabled";
+  }
+  return "Token is no longer active";
+}
+
+function isInactiveTokenDevice(
+  tenant: MockTenant,
+  deviceId: unknown,
+  device: NonNullable<ReturnType<typeof findDevice>> | undefined
+): boolean {
+  if (typeof deviceId !== "string") {
+    return tenant.devices.length > 0;
+  }
+  return !device || !device.enabled;
+}
+
+function isInactiveRefreshTokenDevice(
+  tenant: MockTenant,
+  deviceId: string | undefined,
+  device: NonNullable<ReturnType<typeof findDevice>> | undefined
+): boolean {
+  if (!deviceId) {
+    return tenant.devices.length > 0;
+  }
+  return !device || !device.enabled;
 }
 
 /**

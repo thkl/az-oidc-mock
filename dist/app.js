@@ -2,8 +2,8 @@ import express from "express";
 import { tenantIssuer } from "./config.js";
 import { createLogger } from "./logger.js";
 import { OidcState } from "./oidc/state.js";
-import { createAccessToken, createIdToken } from "./oidc/tokens.js";
-import { findClient, findTenant, findUser, parseScopes, validateRedirectUri, validateScopes } from "./oidc/validation.js";
+import { createAccessToken, createIdToken, verifyAccessToken } from "./oidc/tokens.js";
+import { findClient, findDevice, findTenant, findUser, parseScopes, validateRedirectUri, validateScopes } from "./oidc/validation.js";
 import { renderLoginPage } from "./views/login.js";
 /**
  * Creates the Express application and wires all tenant-aware OIDC routes.
@@ -93,7 +93,8 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
             response_type: "code",
             scope: validation.request.scope.join(" "),
             state: validation.request.state ?? "",
-            nonce: validation.request.nonce ?? ""
+            nonce: validation.request.nonce ?? "",
+            device_id: validation.request.deviceId ?? ""
         }));
     });
     app.post("/:tenantId/login", (req, res) => {
@@ -160,6 +161,68 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
             grantType
         });
         sendTokenError(res, "unsupported_grant_type", "Only authorization_code and refresh_token are supported");
+    });
+    app.post("/:tenantId/internal/token/verify", async (req, res) => {
+        const config = getConfig();
+        const tenant = getTenantOr404(config, req, res);
+        if (!tenant)
+            return;
+        const body = readObjectBody(req);
+        const token = readBearerToken(req) ?? readString(body.token) ?? readString(body.access_token);
+        const audience = readString(body.audience) ?? readString(body.client_id);
+        if (!token) {
+            res.status(400).json({
+                active: false,
+                error: "invalid_request",
+                error_description: "Bearer token or token body field is required"
+            });
+            return;
+        }
+        const verification = await verifyAccessToken({ config, keys, tenant, token, audience });
+        if (!verification.ok) {
+            logger.warn("internal token verification failed", {
+                tenantId: tenant.tenantId,
+                error: verification.error
+            });
+            res.status(401).json({
+                active: false,
+                error: verification.error,
+                error_description: verification.description
+            });
+            return;
+        }
+        const client = findClient(tenant, String(verification.claims.aud));
+        const user = findUser(tenant, String(verification.claims.sub));
+        const device = typeof verification.claims.deviceid === "string"
+            ? findDevice(tenant, verification.claims.deviceid)
+            : undefined;
+        if (!client || !client.enabled || !user || isInactiveTokenDevice(tenant, verification.claims.deviceid, device)) {
+            logger.warn("internal token verification rejected unknown claims", {
+                tenantId: tenant.tenantId,
+                audience: verification.claims.aud,
+                subject: verification.claims.sub,
+                deviceId: verification.claims.deviceid
+            });
+            res.status(401).json({
+                active: false,
+                error: "invalid_token",
+                error_description: describeInactiveTokenSubject(tenant, client, user, verification.claims.deviceid, device)
+            });
+            return;
+        }
+        logger.verbose(config, "internal token verification succeeded", {
+            tenantId: tenant.tenantId,
+            clientId: client.clientId,
+            userSub: user.sub
+        });
+        res.json({
+            active: true,
+            tenant_id: tenant.tenantId,
+            client_id: client.clientId,
+            user_sub: user.sub,
+            ...(device ? { device_id: device.deviceId } : {}),
+            claims: verification.claims
+        });
     });
     app.get("/:tenantId/oauth2/v2.0/logout", (req, res) => {
         const config = getConfig();
@@ -255,6 +318,9 @@ function validateAuthorizeRequest(tenant, query) {
     if (!client) {
         return { ok: false, error: "unauthorized_client", description: "Unknown client for tenant" };
     }
+    if (!client.enabled) {
+        return { ok: false, error: "unauthorized_client", description: "Client is disabled" };
+    }
     if (!validateRedirectUri(client, redirectUri)) {
         return { ok: false, error: "invalid_request", description: "redirect_uri is not registered for client" };
     }
@@ -265,6 +331,10 @@ function validateAuthorizeRequest(tenant, query) {
     if (!validateScopes(client, scope)) {
         return { ok: false, error: "invalid_scope", description: "Requested scope is not allowed for client" };
     }
+    const device = resolveRequestedDevice(tenant, query.device_id);
+    if (!device.ok) {
+        return { ok: false, error: "access_denied", description: device.description };
+    }
     return {
         ok: true,
         client,
@@ -273,9 +343,24 @@ function validateAuthorizeRequest(tenant, query) {
             redirectUri,
             scope,
             state: emptyToUndefined(query.state),
-            nonce: emptyToUndefined(query.nonce)
+            nonce: emptyToUndefined(query.nonce),
+            deviceId: device.deviceId
         }
     };
+}
+function resolveRequestedDevice(tenant, requestedDeviceId) {
+    if (requestedDeviceId) {
+        const device = findDevice(tenant, requestedDeviceId);
+        if (!device) {
+            return { ok: false, description: "Unknown device for tenant" };
+        }
+        if (!device.enabled) {
+            return { ok: false, description: "Device is disabled" };
+        }
+        return { ok: true, deviceId: device.deviceId };
+    }
+    const activeDevice = tenant.devices.find((device) => device.enabled);
+    return { ok: true, deviceId: activeDevice?.deviceId };
 }
 /**
  * Issues an authorization code and redirects the browser back to the client.
@@ -287,7 +372,8 @@ function redirectWithCode(res, oidcState, tenantId, client, request, userSub) {
         redirectUri: request.redirectUri,
         scope: request.scope,
         state: request.state,
-        nonce: request.nonce
+        nonce: request.nonce,
+        deviceId: request.deviceId
     }, userSub);
     const redirectUrl = new URL(request.redirectUri);
     redirectUrl.searchParams.set("code", code);
@@ -339,6 +425,7 @@ async function handleAuthorizationCodeGrant(args) {
             userSub: user.sub,
             scope: entry.scope,
             nonce: entry.nonce,
+            deviceId: entry.deviceId,
             expiresAt: Date.now() + args.config.refreshTokenLifetimeSeconds * 1000
         })
         : undefined;
@@ -351,6 +438,7 @@ async function handleAuthorizationCodeGrant(args) {
         user,
         scope: entry.scope,
         nonce: entry.nonce,
+        deviceId: entry.deviceId,
         refreshToken
     });
     args.logger.info("authorization code grant completed", {
@@ -392,6 +480,17 @@ async function handleRefreshTokenGrant(args) {
         sendTokenError(args.res, "invalid_grant", "User no longer exists");
         return;
     }
+    const device = entry.deviceId ? findDevice(args.tenant, entry.deviceId) : undefined;
+    if (isInactiveRefreshTokenDevice(args.tenant, entry.deviceId, device)) {
+        args.logger.warn("refresh token grant rejected because device is inactive", {
+            tenantId: args.tenant.tenantId,
+            clientId: args.client.clientId,
+            userSub: entry.userSub,
+            deviceId: entry.deviceId
+        });
+        sendTokenError(args.res, "invalid_grant", "Device used for original sign-in is inactive");
+        return;
+    }
     let refreshToken = token;
     if (args.config.rotateRefreshTokens) {
         args.state.revokeRefreshToken(token);
@@ -401,6 +500,7 @@ async function handleRefreshTokenGrant(args) {
             userSub: entry.userSub,
             scope: entry.scope,
             nonce: entry.nonce,
+            deviceId: entry.deviceId,
             expiresAt: Date.now() + args.config.refreshTokenLifetimeSeconds * 1000
         });
     }
@@ -413,6 +513,7 @@ async function handleRefreshTokenGrant(args) {
         user,
         scope: entry.scope,
         nonce: entry.nonce,
+        deviceId: entry.deviceId,
         refreshToken
     });
     args.logger.info("refresh token grant completed", {
@@ -433,7 +534,8 @@ async function sendTokenSet(res, args) {
         client: args.client,
         user: args.user,
         scope: args.scope,
-        nonce: args.nonce
+        nonce: args.nonce,
+        deviceId: args.deviceId
     };
     res.json({
         token_type: "Bearer",
@@ -455,7 +557,7 @@ function authenticateClient(tenant, req) {
         return undefined;
     }
     const client = findClient(tenant, clientId);
-    if (!client) {
+    if (!client || !client.enabled) {
         return undefined;
     }
     if (client.clientSecret && client.clientSecret !== clientSecret) {
@@ -480,6 +582,49 @@ function parseBasicAuth(req) {
         clientId: decodeURIComponent(decoded.slice(0, separator)),
         clientSecret: decodeURIComponent(decoded.slice(separator + 1))
     };
+}
+/**
+ * Reads a bearer token from the Authorization header.
+ */
+function readBearerToken(req) {
+    const header = req.header("authorization");
+    if (!header?.startsWith("Bearer ")) {
+        return undefined;
+    }
+    return readString(header.slice("Bearer ".length).trim());
+}
+/**
+ * Reads object-like request bodies and ignores missing or scalar payloads.
+ */
+function readObjectBody(req) {
+    return req.body && typeof req.body === "object" ? req.body : {};
+}
+function describeInactiveTokenSubject(tenant, client, user, deviceId, device) {
+    if (!client) {
+        return "Token audience is not a configured client";
+    }
+    if (!client.enabled) {
+        return "Token audience client is disabled";
+    }
+    if (!user) {
+        return "Token subject is not a configured user";
+    }
+    if (isInactiveTokenDevice(tenant, deviceId, device)) {
+        return !device ? "Token device is not a configured device" : "Token device is disabled";
+    }
+    return "Token is no longer active";
+}
+function isInactiveTokenDevice(tenant, deviceId, device) {
+    if (typeof deviceId !== "string") {
+        return tenant.devices.length > 0;
+    }
+    return !device || !device.enabled;
+}
+function isInactiveRefreshTokenDevice(tenant, deviceId, device) {
+    if (!deviceId) {
+        return tenant.devices.length > 0;
+    }
+    return !device || !device.enabled;
 }
 /**
  * Reads the selected user from the tenant-specific mock session cookie.

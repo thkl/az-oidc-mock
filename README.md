@@ -116,6 +116,7 @@ GET  http://localhost:3000/common/discovery/v2.0/keys
 GET  http://localhost:3000/common/oauth2/v2.0/authorize
 POST http://localhost:3000/common/oauth2/v2.0/token
 GET  http://localhost:3000/common/oauth2/v2.0/logout
+POST http://localhost:3000/common/internal/token/verify
 ```
 
 The issuer is:
@@ -131,10 +132,12 @@ For MSAL, use `http://localhost:3000/common` as the authority when the library a
 Open this in a browser:
 
 ```text
-http://localhost:3000/common/oauth2/v2.0/authorize?response_type=code&client_id=local-app&redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fauth%2Fcallback&scope=openid%20profile%20email%20offline_access&state=abc&nonce=xyz
+http://localhost:3000/common/oauth2/v2.0/authorize?response_type=code&client_id=local-app&redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fauth%2Fcallback&scope=openid%20profile%20email%20offline_access&state=abc&nonce=xyz&device_id=machine-1
 ```
 
 The mock login screen shows users from the selected tenant. Choosing one redirects to the configured callback with `code` and `state`.
+
+Pass `device_id=machine-1` on the authorize request to bind the login to a configured tenant device. If a tenant has devices and no `device_id` is passed, the first enabled device is used.
 
 Exchange the code:
 
@@ -162,6 +165,67 @@ curl -sS -X POST http://localhost:3000/common/oauth2/v2.0/token \
 ```
 
 If `rotateRefreshTokens` is `true`, the old refresh token is invalidated and a new one is returned.
+
+Refresh-token renewal also checks the device that was used for the original login. If that device is later removed from config or set to `"enabled": false`, renewal fails with `invalid_grant`.
+
+## Device-Bound Sessions
+
+Tenant devices model the machine or service host that performed the original login. This lets the mock reproduce the Azure behavior where a refresh token stops working after the original device is no longer active in the tenant.
+
+Configure devices on a tenant:
+
+```json
+{
+  "tenantId": "common",
+  "displayName": "Default Tenant",
+  "devices": [
+    {
+      "deviceId": "machine-1",
+      "displayName": "Build Agent 1",
+      "enabled": true
+    }
+  ]
+}
+```
+
+Bind a login to that device by adding `device_id` to the authorize request:
+
+```text
+http://localhost:3000/common/oauth2/v2.0/authorize?response_type=code&client_id=local-app&redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fauth%2Fcallback&scope=openid%20profile%20email%20offline_access&device_id=machine-1
+```
+
+The device ID is stored with the authorization code and refresh token. Issued access tokens include it as the `deviceid` claim.
+
+To simulate the machine being deactivated, update the tenant config while the server is running:
+
+```json
+{
+  "deviceId": "machine-1",
+  "displayName": "Build Agent 1",
+  "enabled": false
+}
+```
+
+After config reload:
+
+- refresh-token renewal returns `invalid_grant`
+- internal access-token verification returns `401` with `active: false`
+- new authorization requests using that `device_id` are rejected
+
+## Internal Token Verification
+
+Mocked downstream Azure services can ask the OIDC mock to verify access tokens they receive:
+
+```bash
+curl -sS -X POST http://localhost:3000/common/internal/token/verify \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -d '{"audience":"local-app"}'
+```
+
+The endpoint accepts the access token from `Authorization: Bearer ...`, JSON/form `token`, or JSON/form `access_token`. Pass `audience` or `client_id` to enforce the expected token audience. A valid token returns `200` with `active: true` and the verified claims. Invalid tokens return `401` with `active: false`.
+
+The verifier uses the current in-memory config, so tokens are rejected after their client is removed or set to `"enabled": false`. Disabled clients also cannot start new auth flows or exchange refresh tokens. Device-bound tokens are rejected when their `deviceid` points to a removed or disabled tenant device.
 
 ## Config
 

@@ -14,7 +14,15 @@
           "clientId": "local-app",
           "clientSecret": "local-secret",
           "redirectUris": ["http://localhost:5173/auth/callback"],
-          "allowedScopes": ["openid", "profile", "email", "offline_access"]
+          "allowedScopes": ["openid", "profile", "email", "offline_access"],
+          "enabled": true
+        }
+      ],
+      "devices": [
+        {
+          "deviceId": "machine-1",
+          "displayName": "Developer Workstation",
+          "enabled": true
         }
       ],
       "users": [
@@ -41,9 +49,11 @@
         {
           "clientId": "contoso-app",
           "redirectUris": ["http://localhost:5174/callback"],
-          "allowedScopes": ["openid", "profile", "email", "offline_access"]
+          "allowedScopes": ["openid", "profile", "email", "offline_access"],
+          "enabled": true
         }
       ],
+      "devices": [],
       "users": [
         {
           "sub": "10000000-0000-0000-0000-000000000001",

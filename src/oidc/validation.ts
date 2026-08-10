@@ -1,4 +1,4 @@
-import type { AppConfig, MockClient, MockTenant, MockUser } from "../config.js";
+import type { AppConfig, MockClient, MockDevice, MockTenant, MockUser } from "../config.js";
 
 /**
  * Finds a tenant by its configured tenant ID.
@@ -12,6 +12,13 @@ export function findTenant(config: AppConfig, tenantId: string): MockTenant | un
  */
 export function findClient(tenant: MockTenant, clientId: string): MockClient | undefined {
   return tenant.clients.find((client) => client.clientId === clientId);
+}
+
+/**
+ * Finds a registered device inside a tenant.
+ */
+export function findDevice(tenant: MockTenant, deviceId: string): MockDevice | undefined {
+  return tenant.devices.find((device) => device.deviceId === deviceId);
 }
 
 /**

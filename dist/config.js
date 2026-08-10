@@ -9,17 +9,24 @@ const userSchema = z.object({
     roles: z.array(z.string()).default([]),
     claims: z.record(z.string(), z.unknown()).default({})
 });
+const deviceSchema = z.object({
+    deviceId: z.string().min(1),
+    displayName: z.string().min(1),
+    enabled: z.boolean().default(true)
+});
 const clientSchema = z.object({
     clientId: z.string().min(1),
     clientSecret: z.string().optional(),
     redirectUris: z.array(z.string().url()).min(1),
-    allowedScopes: z.array(z.string()).default(["openid", "profile", "email"])
+    allowedScopes: z.array(z.string()).default(["openid", "profile", "email"]),
+    enabled: z.boolean().default(true)
 });
 const tenantSchema = z.object({
     tenantId: z.string().min(1),
     displayName: z.string().min(1),
     clients: z.array(clientSchema).min(1),
     users: z.array(userSchema).min(1),
+    devices: z.array(deviceSchema).default([]),
     enableSessions: z.boolean().default(true),
 });
 const tlsSchema = z.object({
@@ -71,6 +78,13 @@ export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"
                 throw new Error(`Duplicate clientId "${client.clientId}" in tenant "${tenant.tenantId}"`);
             }
             clientIds.add(client.clientId);
+        }
+        const deviceIds = new Set();
+        for (const device of tenant.devices) {
+            if (deviceIds.has(device.deviceId)) {
+                throw new Error(`Duplicate deviceId "${device.deviceId}" in tenant "${tenant.tenantId}"`);
+            }
+            deviceIds.add(device.deviceId);
         }
     }
     return {
