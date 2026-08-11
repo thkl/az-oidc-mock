@@ -82,6 +82,8 @@ TLS settings are read at startup. Restart the server after changing certificate 
 
 `config.json` is watched while the server is running. Valid changes are reloaded automatically for new requests. If a changed file is invalid JSON or fails schema validation, the server keeps using the last valid config and logs the reload error.
 
+Refresh tokens are persisted next to the active config file in `refresh-tokens.json`. If `CONFIG_PATH=/config/config.json`, the refresh-token cache is `/config/refresh-tokens.json`, which makes it suitable for Docker bind mounts or shared volumes. Expired refresh tokens are pruned when the cache is loaded or updated.
+
 Verbose logging can be enabled in `config.json`:
 
 ```json
@@ -153,6 +155,16 @@ curl -sS -X POST http://localhost:3000/common/oauth2/v2.0/token \
 
 Refresh tokens are issued when the request includes `offline_access`.
 
+The token response includes refresh-token expiry metadata when a refresh token is issued:
+
+```json
+{
+  "refresh_token": "PASTE_REFRESH_TOKEN_HERE",
+  "refresh_token_expires_in": 86400,
+  "refresh_token_expires_at": 1786464000
+}
+```
+
 ## Silent Renewal
 
 ```bash
@@ -165,6 +177,8 @@ curl -sS -X POST http://localhost:3000/common/oauth2/v2.0/token \
 ```
 
 If `rotateRefreshTokens` is `true`, the old refresh token is invalidated and a new one is returned.
+
+Refresh tokens are stored in `refresh-tokens.json` next to the active config file, so renewal continues to work after restarting the mock as long as that config directory is persisted.
 
 Refresh-token renewal also checks the device that was used for the original login. If that device is later removed from config or set to `"enabled": false`, renewal fails with `invalid_grant`.
 

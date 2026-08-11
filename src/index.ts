@@ -1,15 +1,19 @@
 import https from "node:https";
+import path from "node:path";
 import { createApp } from "./app.js";
 import { loadConfig, watchConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { createSigningKeys } from "./oidc/keys.js";
+import { OidcState } from "./oidc/state.js";
 import { loadTlsOptions } from "./tls.js";
 
 const configPath = process.env.CONFIG_PATH ?? "config.json";
+const refreshTokenStorePath = path.join(path.dirname(path.resolve(configPath)), "refresh-tokens.json");
 let config = loadConfig(configPath);
 const keys = await createSigningKeys();
 const logger = createLogger();
-const app = createApp({ config: () => config, keys, logger });
+const state = new OidcState(refreshTokenStorePath);
+const app = createApp({ config: () => config, keys, logger, state });
 
 watchConfig(configPath, (reloaded) => {
   config = reloaded;
@@ -36,6 +40,7 @@ server.listen(port, () => {
     port,
     protocol: config.tls ? "https" : "http",
     tenantCount: config.tenants.length,
+    refreshTokenStorePath,
     verbose: config.verbose
   });
 });

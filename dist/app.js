@@ -418,6 +418,7 @@ async function handleAuthorizationCodeGrant(args) {
         sendTokenError(args.res, "invalid_grant", "User no longer exists");
         return;
     }
+    const refreshTokenExpiresAt = Date.now() + args.config.refreshTokenLifetimeSeconds * 1000;
     const refreshToken = entry.scope.includes("offline_access")
         ? args.state.createRefreshToken({
             tenantId: args.tenant.tenantId,
@@ -426,7 +427,7 @@ async function handleAuthorizationCodeGrant(args) {
             scope: entry.scope,
             nonce: entry.nonce,
             deviceId: entry.deviceId,
-            expiresAt: Date.now() + args.config.refreshTokenLifetimeSeconds * 1000
+            expiresAt: refreshTokenExpiresAt
         })
         : undefined;
     await sendTokenSet(args.res, {
@@ -439,7 +440,8 @@ async function handleAuthorizationCodeGrant(args) {
         scope: entry.scope,
         nonce: entry.nonce,
         deviceId: entry.deviceId,
-        refreshToken
+        refreshToken,
+        refreshTokenExpiresAt: refreshToken ? refreshTokenExpiresAt : undefined
     });
     args.logger.info("authorization code grant completed", {
         tenantId: args.tenant.tenantId,
@@ -492,8 +494,10 @@ async function handleRefreshTokenGrant(args) {
         return;
     }
     let refreshToken = token;
+    let refreshTokenExpiresAt = entry.expiresAt;
     if (args.config.rotateRefreshTokens) {
         args.state.revokeRefreshToken(token);
+        refreshTokenExpiresAt = Date.now() + args.config.refreshTokenLifetimeSeconds * 1000;
         refreshToken = args.state.createRefreshToken({
             tenantId: entry.tenantId,
             clientId: entry.clientId,
@@ -501,7 +505,7 @@ async function handleRefreshTokenGrant(args) {
             scope: entry.scope,
             nonce: entry.nonce,
             deviceId: entry.deviceId,
-            expiresAt: Date.now() + args.config.refreshTokenLifetimeSeconds * 1000
+            expiresAt: refreshTokenExpiresAt
         });
     }
     await sendTokenSet(args.res, {
@@ -514,7 +518,8 @@ async function handleRefreshTokenGrant(args) {
         scope: entry.scope,
         nonce: entry.nonce,
         deviceId: entry.deviceId,
-        refreshToken
+        refreshToken,
+        refreshTokenExpiresAt
     });
     args.logger.info("refresh token grant completed", {
         tenantId: args.tenant.tenantId,
@@ -543,7 +548,11 @@ async function sendTokenSet(res, args) {
         scope: args.scope.join(" "),
         access_token: await createAccessToken(input),
         id_token: await createIdToken(input),
-        ...(args.refreshToken ? { refresh_token: args.refreshToken } : {})
+        ...(args.refreshToken && args.refreshTokenExpiresAt ? {
+            refresh_token: args.refreshToken,
+            refresh_token_expires_in: Math.max(0, Math.floor((args.refreshTokenExpiresAt - Date.now()) / 1000)),
+            refresh_token_expires_at: Math.floor(args.refreshTokenExpiresAt / 1000)
+        } : {})
     });
 }
 /**

@@ -7,6 +7,7 @@ import { createApp } from "../src/app.js";
 import { loadConfig, watchConfig, type AppConfig } from "../src/config.js";
 import type { Logger } from "../src/logger.js";
 import { createSigningKeys, type SigningKeys } from "../src/oidc/keys.js";
+import { OidcState } from "../src/oidc/state.js";
 import { loadTlsOptions } from "../src/tls.js";
 
 const config: AppConfig = {
@@ -200,6 +201,8 @@ describe("Azure OIDC mock", () => {
     expect(token.body.access_token).toBeTruthy();
     expect(token.body.id_token).toBeTruthy();
     expect(token.body.refresh_token).toBeTruthy();
+    expect(token.body.refresh_token_expires_in).toBeGreaterThan(0);
+    expect(token.body.refresh_token_expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
   });
 
   it("verifies an issued access token through the internal endpoint", async () => {
@@ -331,6 +334,8 @@ describe("Azure OIDC mock", () => {
     expect(refreshed.body.id_token).toBeTruthy();
     expect(refreshed.body.refresh_token).toBeTruthy();
     expect(refreshed.body.refresh_token).not.toBe(first.body.refresh_token);
+    expect(refreshed.body.refresh_token_expires_in).toBeGreaterThan(0);
+    expect(refreshed.body.refresh_token_expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
 
     await request(app)
       .post("/common/oauth2/v2.0/token")
@@ -342,6 +347,46 @@ describe("Azure OIDC mock", () => {
         refresh_token: first.body.refresh_token
       })
       .expect(400);
+  });
+
+  it("persists refresh tokens to a file so renewal survives app restart", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-"));
+    const refreshTokenStorePath = path.join(dir, "refresh-tokens.json");
+
+    try {
+      const firstApp = createApp({
+        config,
+        keys,
+        logger: silentLogger,
+        state: new OidcState(refreshTokenStorePath)
+      });
+      const first = await issueTokenSet(firstApp);
+
+      await expect(fs.stat(refreshTokenStorePath)).resolves.toBeTruthy();
+
+      const restartedApp = createApp({
+        config,
+        keys,
+        logger: silentLogger,
+        state: new OidcState(refreshTokenStorePath)
+      });
+
+      const refreshed = await request(restartedApp)
+        .post("/common/oauth2/v2.0/token")
+        .type("form")
+        .send({
+          grant_type: "refresh_token",
+          client_id: "local-app",
+          client_secret: "local-secret",
+          refresh_token: first.body.refresh_token
+        })
+        .expect(200);
+
+      expect(refreshed.body.access_token).toBeTruthy();
+      expect(refreshed.body.refresh_token).toBeTruthy();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects refresh token renewal after the original login device is disabled", async () => {
