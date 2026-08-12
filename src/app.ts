@@ -676,8 +676,15 @@ async function sendTokenSet(
     nonce: args.nonce,
     deviceId: args.deviceId
   };
+  const raw = JSON.stringify({ uid : args.user.sub , utid: args.tenant.tenantId });
+  const enc = Buffer.from(raw)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
 
   res.json({
+    client_info: enc,
     token_type: "Bearer",
     expires_in: args.config.tokenLifetimeSeconds,
     scope: args.scope.join(" "),
