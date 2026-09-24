@@ -22,6 +22,7 @@ import { renderLoginPage } from "./views/login.js";
 
 const ADMIN_TENANT_ID = "internal";
 const ADMIN_CLIENT_ID = "internal-admin";
+const SECRET_MASK = "********";
 
 type AppDeps = {
   config: AppConfig | (() => AppConfig);
@@ -135,7 +136,7 @@ export function createApp({
       res.status(auth.status).json({ error: auth.error, error_description: auth.description });
       return;
     }
-    res.json({ config: getConfig(), user: { sub: auth.user.sub, name: auth.user.name, email: auth.user.email } });
+    res.json({ config: redactConfigSecrets(getConfig()), user: { sub: auth.user.sub, name: auth.user.name, email: auth.user.email } });
   });
 
   app.put("/internal/admin/api/config", (req, res) => {
@@ -152,13 +153,51 @@ export function createApp({
     const body = readObjectBody(req);
     const nextConfig = body.config;
     try {
-      const saved = saveConfig(configPath, nextConfig as AppConfig);
+      const saved = saveConfig(configPath, mergeMaskedClientSecrets(getConfig(), nextConfig as AppConfig));
       onConfigSaved?.(saved);
       logger.info("admin config saved", { userSub: auth.user.sub, tenantCount: saved.tenants.length });
-      res.json({ config: saved });
+      res.json({ config: redactConfigSecrets(saved) });
     } catch (error) {
       res.status(400).json({
         error: "invalid_config",
+        error_description: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  app.post("/internal/admin/api/passwords", (req, res) => {
+    const config = getConfig();
+    const auth = getAdminRequestUser(config, req, sessionSecret);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+      return;
+    }
+
+    const body = readObjectBody(req);
+    const tenantId = readString(body.tenant_id) ?? readString(body.tenantId);
+    const userSub = readString(body.user_sub) ?? readString(body.userSub);
+    const password = readString(body.password);
+    const tenant = tenantId ? findTenant(config, tenantId) : undefined;
+    const user = tenant && userSub ? findUser(tenant, userSub) : undefined;
+    if (!tenant || !user || !password) {
+      res.status(400).json({
+        error: "invalid_request",
+        error_description: "tenant_id, user_sub, and password are required"
+      });
+      return;
+    }
+
+    try {
+      passwordStore.setPassword(tenant.tenantId, user.sub, password);
+      logger.info("admin user password updated", {
+        adminUserSub: auth.user.sub,
+        tenantId: tenant.tenantId,
+        userSub: user.sub
+      });
+      res.json({ updated: true, tenant_id: tenant.tenantId, user_sub: user.sub });
+    } catch (error) {
+      res.status(503).json({
+        error: "password_store_unavailable",
         error_description: error instanceof Error ? error.message : String(error)
       });
     }
@@ -556,6 +595,38 @@ function getTenantOr404(config: AppConfig, req: Request, res: Response): MockTen
     res.status(404).json({ error: "tenant_not_found" });
   }
   return tenant;
+}
+
+function redactConfigSecrets(config: AppConfig): AppConfig {
+  return {
+    ...config,
+    tenants: config.tenants.map((tenant) => ({
+      ...tenant,
+      clients: tenant.clients.map((client) => ({
+        ...client,
+        ...(client.clientSecret ? { clientSecret: SECRET_MASK } : {})
+      }))
+    }))
+  };
+}
+
+function mergeMaskedClientSecrets(currentConfig: AppConfig, nextConfig: AppConfig): AppConfig {
+  return {
+    ...nextConfig,
+    tenants: nextConfig.tenants.map((tenant) => {
+      const currentTenant = findTenant(currentConfig, tenant.tenantId);
+      return {
+        ...tenant,
+        clients: tenant.clients.map((client) => {
+          const currentClient = currentTenant ? findClient(currentTenant, client.clientId) : undefined;
+          if ((client.clientSecret === undefined || client.clientSecret === SECRET_MASK) && currentClient?.clientSecret) {
+            return { ...client, clientSecret: currentClient.clientSecret };
+          }
+          return client.clientSecret === SECRET_MASK ? { ...client, clientSecret: undefined } : client;
+        })
+      };
+    })
+  };
 }
 
 function getAdminSetup(config: AppConfig):

@@ -210,6 +210,8 @@ describe("Azure OIDC mock", () => {
     const api = await agent.get("/internal/admin/api/config").expect(200);
     expect(api.body.user.sub).toBe("admin-1");
     expect(api.body.config.tenants.some((tenant: { tenantId: string }) => tenant.tenantId === "internal")).toBe(true);
+    expect(JSON.stringify(api.body.config)).not.toContain("local-secret");
+    expect(api.body.config.tenants[0].clients[0].clientSecret).toBe("********");
   });
 
   it("saves admin UI config changes to the configured config file", async () => {
@@ -255,6 +257,63 @@ describe("Azure OIDC mock", () => {
       expect(currentConfig.tenants.find((tenant) => tenant.tenantId === "common")?.displayName).toBe("Updated Tenant");
       const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as AppConfig;
       expect(saved.tenants.find((tenant) => tenant.tenantId === "common")?.displayName).toBe("Updated Tenant");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves masked client secrets when admin config is saved", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-admin-"));
+    try {
+      const configPath = path.join(dir, "config.json");
+      await fs.writeFile(configPath, `${JSON.stringify(adminConfig(), null, 2)}\n`, "utf8");
+
+      let currentConfig = adminConfig();
+      const app = createApp({
+        config: () => currentConfig,
+        keys,
+        logger: silentLogger,
+        configPath,
+        onConfigSaved: (saved) => {
+          currentConfig = saved;
+        }
+      });
+      const agent = request.agent(app);
+
+      await loginInternalAdmin(agent);
+      const masked = await agent.get("/internal/admin/api/config").expect(200);
+      await agent.put("/internal/admin/api/config").send({ config: masked.body.config }).expect(200);
+
+      const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as AppConfig;
+      expect(saved.tenants[0].clients[0].clientSecret).toBe("local-secret");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sets user passwords through the admin UI API without returning or storing plaintext", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-admin-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      const passwordStore = new PasswordStore(passwdPath);
+      const app = createApp({
+        config: adminConfig(),
+        keys,
+        logger: silentLogger,
+        passwordStore
+      });
+      const agent = request.agent(app);
+
+      await loginInternalAdmin(agent);
+      const update = await agent
+        .post("/internal/admin/api/passwords")
+        .send({ tenant_id: "common", user_sub: "user-1", password: "new-admin-password" })
+        .expect(200);
+
+      expect(update.body).toEqual({ updated: true, tenant_id: "common", user_sub: "user-1" });
+      expect(update.text).not.toContain("new-admin-password");
+      expect(passwordStore.verify("common", "user-1", "new-admin-password")).toBe(true);
+      expect(await fs.readFile(passwdPath, "utf8")).not.toContain("new-admin-password");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -974,6 +1033,22 @@ async function issueTokenSet(app: ReturnType<typeof createApp>): Promise<request
     .expect(200);
 
   return token;
+}
+
+async function loginInternalAdmin(agent: request.Agent): Promise<void> {
+  const login = await agent
+    .post("/internal/login")
+    .type("form")
+    .send({
+      response_type: "code",
+      client_id: "internal-admin",
+      redirect_uri: "http://127.0.0.1:3000/internal/admin/callback",
+      scope: "openid profile email",
+      state: "admin",
+      user_sub: "admin-1"
+    })
+    .expect(302);
+  await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
 }
 
 function disableCommonDevice(): AppConfig {

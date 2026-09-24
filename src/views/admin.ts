@@ -208,7 +208,7 @@ export function renderAdminPage(user: MockUser): string {
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .triple { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
     .split { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 10px; }
-    .secret-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: end; }
+    .secret-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: end; }
     .row-list { display: grid; gap: 6px; align-content: start; }
     .row-button { min-height: 0; display: grid; gap: 3px; text-align: left; padding: 8px; }
     .row-button strong { font-weight: 440; }
@@ -345,6 +345,11 @@ export function renderAdminPage(user: MockUser): string {
               </div>
               <label>Roles <textarea v-model="selectedUser.rolesText" spellcheck="false"></textarea></label>
               <label>Claims JSON <textarea v-model="selectedUser.claimsText" spellcheck="false"></textarea></label>
+              <div class="secret-row">
+                <label>New Password <input v-model="selectedUser.newPassword" autocomplete="new-password" type="password"></label>
+                <button type="button" @click="generateUserPassword">Generate</button>
+                <button type="button" @click="setUserPassword" :disabled="!selectedUser.newPassword">Set</button>
+              </div>
               <div class="actions"><button class="danger" type="button" @click="removeUser">Delete User</button></div>
             </div>
             <div v-else class="empty">Select or add a user.</div>
@@ -385,6 +390,7 @@ export function renderAdminPage(user: MockUser): string {
         for (const user of tenant.users) {
           user.rolesText = (user.roles || []).join('\\n');
           user.claimsText = JSON.stringify(user.claims || {}, null, 2);
+          user.newPassword = '';
         }
       }
       return copy;
@@ -406,6 +412,7 @@ export function renderAdminPage(user: MockUser): string {
           user.claims = JSON.parse(user.claimsText || '{}');
           delete user.rolesText;
           delete user.claimsText;
+          delete user.newPassword;
         }
       }
       return copy;
@@ -519,6 +526,31 @@ export function renderAdminPage(user: MockUser): string {
         generateClientSecret() {
           if (!this.selectedClient) return;
           this.selectedClient.clientSecret = 'az_mock-sk_' + randomBase64Url(24);
+        },
+        generateUserPassword() {
+          if (!this.selectedUser) return;
+          this.selectedUser.newPassword = 'az_mock-pw_' + randomBase64Url(18);
+        },
+        async setUserPassword() {
+          if (!this.selectedTenant || !this.selectedUser?.newPassword) return;
+          this.status = { type: '', message: '' };
+          try {
+            const response = await fetch('/internal/admin/api/passwords', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                tenant_id: this.selectedTenant.tenantId,
+                user_sub: this.selectedUser.sub,
+                password: this.selectedUser.newPassword
+              })
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error_description || 'Unable to set password');
+            this.selectedUser.newPassword = '';
+            this.status = { type: 'ok', message: 'Password updated.' };
+          } catch (error) {
+            this.status = { type: 'error', message: error.message };
+          }
         },
         removeClient() {
           if (!confirm('Delete this client?')) return;
