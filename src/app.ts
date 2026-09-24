@@ -35,7 +35,7 @@ export function createApp({
   passwordStore = new PasswordStore(),
   mfaStore = new MfaStore(),
   adminToken,
-  sessionSecret = createDefaultSessionSecret(keys),
+  sessionSecret = createDefaultSessionSecret(),
   configPath,
   onConfigSaved
 }: AppDeps): express.Express {
@@ -55,8 +55,8 @@ export function createApp({
   };
 
   app.disable("x-powered-by");
-  app.use(express.urlencoded({ extended: false }));
-  app.use(express.json());
+  app.use(express.urlencoded({ extended: false, limit: "100kb" }));
+  app.use(express.json({ limit: "100kb" }));
   app.use((req, res, next) => {
     const startedAt = Date.now();
     res.on("finish", () => {

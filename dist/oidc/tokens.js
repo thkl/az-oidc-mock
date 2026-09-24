@@ -1,5 +1,24 @@
 import { createLocalJWKSet, errors, jwtVerify, SignJWT } from "jose";
 import { tenantIssuer } from "../config.js";
+const RESERVED_CLAIMS = new Set([
+    "iss",
+    "aud",
+    "iat",
+    "nbf",
+    "exp",
+    "ver",
+    "tid",
+    "oid",
+    "sub",
+    "name",
+    "preferred_username",
+    "email",
+    "roles",
+    "scp",
+    "nonce",
+    "deviceid",
+    "client_info"
+]);
 /**
  * Creates an Azure-style OIDC ID token for the selected mock user.
  */
@@ -20,7 +39,7 @@ export async function createIdToken(input) {
         preferred_username: input.user.preferred_username,
         email: input.user.email,
         roles: input.user.roles,
-        ...input.user.claims
+        ...customClaims(input.user.claims)
     };
     if (input.nonce) {
         claims.nonce = input.nonce;
@@ -51,7 +70,7 @@ export async function createAccessToken(input) {
         scp: input.scope.filter((scope) => scope !== "openid").join(" "),
         roles: input.user.roles,
         ...(input.deviceId ? { deviceid: input.deviceId } : {}),
-        ...input.user.claims
+        ...customClaims(input.user.claims)
     }, input.keys);
 }
 /**
@@ -108,6 +127,9 @@ function signJwt(claims, keys) {
     return new SignJWT(claims)
         .setProtectedHeader({ alg: "RS256", kid: keys.kid, typ: "JWT" })
         .sign(keys.privateKey);
+}
+function customClaims(claims) {
+    return Object.fromEntries(Object.entries(claims).filter(([key]) => !RESERVED_CLAIMS.has(key)));
 }
 function describeJwtVerificationError(error) {
     if (error instanceof errors.JWTExpired) {

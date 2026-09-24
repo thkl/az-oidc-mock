@@ -5,24 +5,26 @@ export function getSessionUser(req, config, tenant, sessionSecret) {
     const userSub = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
     return userSub ? resolveEffectiveUser(config, tenant, userSub)?.user : undefined;
 }
-export function setSessionUser(res, tenant, userSub, sessionSecret) {
+export function setSessionUser(req, res, config, tenant, userSub, sessionSecret) {
     const maxAge = tenant.sessionLifetimeSeconds * 1000;
     res.cookie(`az_oidc_mock_${tenant.tenantId}`, createSessionCookie(tenant.tenantId, userSub, Date.now() + maxAge, sessionSecret), {
         httpOnly: true,
         sameSite: "lax",
+        secure: isSecureRequest(req, config),
         path: `/${tenant.tenantId}`,
         maxAge
     });
 }
-export function clearSessionUser(res, tenantId) {
+export function clearSessionUser(req, res, config, tenantId) {
     res.clearCookie(`az_oidc_mock_${tenantId}`, {
         httpOnly: true,
         sameSite: "lax",
+        secure: isSecureRequest(req, config),
         path: `/${tenantId}`
     });
 }
-export function createDefaultSessionSecret(keys) {
-    return crypto.createHash("sha256").update(JSON.stringify(keys.jwks)).digest("base64url");
+export function createDefaultSessionSecret() {
+    return crypto.randomBytes(32).toString("base64url");
 }
 export function constantTimeEqual(actualValue, expectedValue) {
     const actual = Buffer.from(actualValue);
@@ -63,6 +65,10 @@ function verifySessionCookie(cookie, tenantId, sessionSecret) {
 }
 function signSessionPayload(payload, sessionSecret) {
     return crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
+}
+function isSecureRequest(req, config) {
+    const forwardedProto = req.header("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+    return req.secure || forwardedProto === "https" || new URL(config.baseUrl).protocol === "https:";
 }
 function base64UrlJson(value) {
     return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");

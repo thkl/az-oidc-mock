@@ -344,7 +344,7 @@ Session cookies are signed. Set `OIDC_MOCK_SESSION_SECRET` to a strong shared va
 OIDC_MOCK_SESSION_SECRET='change-this-long-random-session-secret'
 ```
 
-If the variable is omitted, the mock derives a per-process secret. That is fine for one local process, but browser SSO cookies stop working after restart and may fail between replicas.
+If the variable is omitted, the mock generates a random per-process secret. That is fine for one local process, but browser SSO cookies stop working after restart and may fail between replicas.
 
 For Docker Swarm or other deployments where the config directory is mounted into the service, set an admin token:
 

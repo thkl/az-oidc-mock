@@ -10,7 +10,7 @@ import { registerOidcRoutes } from "./routes/oidc.js";
 /**
  * Creates the Express application and wires all tenant-aware OIDC routes.
  */
-export function createApp({ config, keys, logger = createLogger(), state = new OidcState(), passwordStore = new PasswordStore(), mfaStore = new MfaStore(), adminToken, sessionSecret = createDefaultSessionSecret(keys), configPath, onConfigSaved }) {
+export function createApp({ config, keys, logger = createLogger(), state = new OidcState(), passwordStore = new PasswordStore(), mfaStore = new MfaStore(), adminToken, sessionSecret = createDefaultSessionSecret(), configPath, onConfigSaved }) {
     const app = express();
     const getConfig = typeof config === "function" ? config : () => config;
     const routeContext = {
@@ -26,8 +26,8 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
         onConfigSaved
     };
     app.disable("x-powered-by");
-    app.use(express.urlencoded({ extended: false }));
-    app.use(express.json());
+    app.use(express.urlencoded({ extended: false, limit: "100kb" }));
+    app.use(express.json({ limit: "100kb" }));
     app.use((req, res, next) => {
         const startedAt = Date.now();
         res.on("finish", () => {

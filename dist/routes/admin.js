@@ -1,5 +1,6 @@
+import crypto from "node:crypto";
 import { saveConfig } from "../config.js";
-import { getSessionUser, setSessionUser } from "../oidc/session.js";
+import { constantTimeEqual, getSessionUser, setSessionUser } from "../oidc/session.js";
 import { resolveEffectiveUser } from "../oidc/users.js";
 import { findClient, findTenant, findUser, validateRedirectUri, validateScopes } from "../oidc/validation.js";
 import { renderAdminPage, renderAdminSetupPage } from "../views/admin.js";
@@ -53,7 +54,7 @@ export function registerAdminRoutes(app, context) {
             res.status(403).type("html").send(renderAdminSetupPage(adminAccessDescription(), createInternalTenantExample(config)));
             return;
         }
-        setSessionUser(res, setup.tenant, resolvedUser.user.sub, context.sessionSecret);
+        setSessionUser(req, res, config, setup.tenant, resolvedUser.user.sub, context.sessionSecret);
         res.redirect("/internal/admin");
     });
     app.get("/internal/admin/api/config", (req, res) => {
@@ -64,13 +65,18 @@ export function registerAdminRoutes(app, context) {
         }
         res.json({
             config: redactConfigSecrets(context.getConfig()),
-            user: { sub: auth.user.sub, name: auth.user.name, email: auth.user.email }
+            user: { sub: auth.user.sub, name: auth.user.name, email: auth.user.email },
+            csrfToken: createAdminCsrfToken(auth.user, context.sessionSecret)
         });
     });
     app.put("/internal/admin/api/config", (req, res) => {
         const auth = getAdminRequestUser(context.getConfig(), req, context.sessionSecret);
         if (!auth.ok) {
             res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+            return;
+        }
+        if (!verifyAdminCsrfToken(req, auth.user, context.sessionSecret)) {
+            res.status(403).json({ error: "csrf_failed", error_description: "Admin CSRF token is missing or invalid" });
             return;
         }
         if (!context.configPath) {
@@ -97,6 +103,10 @@ export function registerAdminRoutes(app, context) {
         const auth = getAdminRequestUser(config, req, context.sessionSecret);
         if (!auth.ok) {
             res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+            return;
+        }
+        if (!verifyAdminCsrfToken(req, auth.user, context.sessionSecret)) {
+            res.status(403).json({ error: "csrf_failed", error_description: "Admin CSRF token is missing or invalid" });
             return;
         }
         const body = readObjectBody(req);
@@ -133,6 +143,10 @@ export function registerAdminRoutes(app, context) {
         const auth = getAdminRequestUser(config, req, context.sessionSecret);
         if (!auth.ok) {
             res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+            return;
+        }
+        if (!verifyAdminCsrfToken(req, auth.user, context.sessionSecret)) {
+            res.status(403).json({ error: "csrf_failed", error_description: "Admin CSRF token is missing or invalid" });
             return;
         }
         const body = readObjectBody(req);
@@ -226,6 +240,16 @@ function isAdminUser(user) {
 }
 function adminAccessDescription() {
     return `Admin login requires the "${ADMIN_ROLE}" role or claims.${ADMIN_CLAIM}=true.`;
+}
+function createAdminCsrfToken(user, sessionSecret) {
+    return crypto
+        .createHmac("sha256", sessionSecret)
+        .update(`admin:${user.sub}`)
+        .digest("base64url");
+}
+function verifyAdminCsrfToken(req, user, sessionSecret) {
+    const supplied = readString(req.header("x-csrf-token"));
+    return Boolean(supplied && constantTimeEqual(supplied, createAdminCsrfToken(user, sessionSecret)));
 }
 function createAdminAuthorizeUrl(config) {
     const url = new URL(`${config.baseUrl.replace(/\/$/, "")}/${ADMIN_TENANT_ID}/oauth2/v2.0/authorize`);

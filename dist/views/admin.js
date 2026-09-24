@@ -11,7 +11,6 @@ export function renderAdminPage(user) {
       if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
     } catch {}
   </script>
-  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <style>
     :root {
       color-scheme: light dark;
@@ -385,7 +384,6 @@ export function renderAdminPage(user) {
   </div>
 
   <script>
-    const { createApp } = Vue;
     const blankTenant = () => ({
       tenantId: 'tenant-' + Math.random().toString(36).slice(2, 7),
       displayName: 'New Tenant',
@@ -407,6 +405,13 @@ export function renderAdminPage(user) {
       crypto.getRandomValues(data);
       return btoa(String.fromCharCode(...data)).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
     };
+    const escapeText = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    })[char]);
     const decorate = (config) => {
       const copy = clone(config);
       for (const tenant of copy.tenants) {
@@ -452,222 +457,312 @@ export function renderAdminPage(user) {
       return copy;
     };
 
-    createApp({
-      data() {
-        return {
-          loading: true,
-          saving: false,
-          editable: { tenants: [] },
-          selectedTenantId: '',
-          selectedClientIndex: 0,
-          selectedUserIndex: 0,
-          selectedShareUserKey: '',
-          themeMode: localStorage.getItem('az_oidc_admin_theme') || 'system',
-          status: { type: '', message: '' }
-        };
-      },
-      computed: {
-        selectedTenant() { return this.editable.tenants.find((tenant) => tenant.tenantId === this.selectedTenantId) || this.editable.tenants[0]; },
-        selectedClient() { return this.selectedTenant?.clients[this.selectedClientIndex]; },
-        selectedUser() { return this.selectedTenant?.users[this.selectedUserIndex]; },
-        shareTargets() { return this.selectedTenant && this.selectedUser ? this.editable.tenants.filter((tenant) => tenant !== this.selectedTenant) : []; },
-        shareUserOptions() {
-          if (!this.selectedTenant) return [];
-          return this.editable.tenants
-            .filter((tenant) => tenant !== this.selectedTenant)
-            .flatMap((tenant) => tenant.users.map((user) => ({
-              key: tenant.tenantId + ':' + user.sub,
-              tenantId: tenant.tenantId,
-              userSub: user.sub,
-              label: (user.name || user.preferred_username || user.sub) + ' · ' + (tenant.displayName || tenant.tenantId)
-            })));
-        },
-        totalClients() { return this.editable.tenants.reduce((sum, tenant) => sum + tenant.clients.length, 0); },
-        totalUsers() { return this.editable.tenants.reduce((sum, tenant) => sum + tenant.users.length, 0); }
-      },
-      async mounted() {
-        this.applyTheme();
-        await this.load();
-      },
-      methods: {
-        applyTheme() {
-          if (this.themeMode === 'light' || this.themeMode === 'dark') {
-            document.documentElement.dataset.theme = this.themeMode;
-          } else {
-            delete document.documentElement.dataset.theme;
-          }
-        },
-        setTheme(theme) {
-          this.themeMode = theme;
-          if (theme === 'system') {
-            localStorage.removeItem('az_oidc_admin_theme');
-          } else {
-            localStorage.setItem('az_oidc_admin_theme', theme);
-          }
-          this.applyTheme();
-        },
-        async load() {
-          this.loading = true;
-          this.status = { type: '', message: '' };
-          try {
-            const response = await fetch('/internal/admin/api/config');
-            if (!response.ok) throw new Error((await response.json()).error_description || 'Unable to load config');
-            const payload = await response.json();
-            this.editable = decorate(payload.config);
-            this.selectedTenantId = this.editable.tenants[0]?.tenantId || '';
-            this.selectedClientIndex = 0;
-            this.selectedUserIndex = 0;
-            this.selectedShareUserKey = '';
-          } catch (error) {
-            this.status = { type: 'error', message: error.message };
-          } finally {
-            this.loading = false;
-          }
-        },
-        async save() {
-          this.saving = true;
-          this.status = { type: '', message: '' };
-          try {
-            const response = await fetch('/internal/admin/api/config', {
-              method: 'PUT',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ config: clean(this.editable) })
-            });
-            const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error_description || 'Unable to save config');
-            this.editable = decorate(payload.config);
-            this.status = { type: 'ok', message: 'Configuration saved.' };
-          } catch (error) {
-            this.status = { type: 'error', message: error.message };
-          } finally {
-            this.saving = false;
-          }
-        },
-        selectTenant(tenantId) {
-          this.selectedTenantId = tenantId;
-          this.selectedClientIndex = 0;
-          this.selectedUserIndex = 0;
-          this.selectedShareUserKey = '';
-        },
-        addTenant() {
-          const tenant = decorate({ tenants: [blankTenant()] }).tenants[0];
-          tenant.clients.push({ clientId: 'new-client', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
-          tenant.users.push({ sub: 'new-user', name: 'New User', email: 'user@example.test', preferred_username: 'user@example.test', roles: [], rolesText: '', claims: {}, claimsText: '{}' });
-          this.editable.tenants.push(tenant);
-          this.selectTenant(tenant.tenantId);
-        },
-        duplicateTenant() {
-          const tenant = clone(this.selectedTenant);
-          tenant.tenantId = tenant.tenantId + '-copy';
-          tenant.displayName = tenant.displayName + ' Copy';
-          this.editable.tenants.push(tenant);
-          this.selectTenant(tenant.tenantId);
-        },
-        removeTenant() {
-          if (!confirm('Delete this tenant from the config?')) return;
-          this.editable.tenants = this.editable.tenants.filter((tenant) => tenant !== this.selectedTenant);
-          this.selectTenant(this.editable.tenants[0]?.tenantId || '');
-        },
-        addClient() {
-          this.selectedTenant.clients.push({ clientId: 'new-client', clientSecret: '', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
-          this.selectedClientIndex = this.selectedTenant.clients.length - 1;
-        },
-        generateClientSecret() {
-          if (!this.selectedClient) return;
-          this.selectedClient.clientSecret = 'az_mock-sk_' + randomBase64Url(24);
-        },
-        generateUserPassword() {
-          if (!this.selectedUser) return;
-          this.selectedUser.newPassword = 'az_mock-pw_' + randomBase64Url(18);
-        },
-        async setUserPassword() {
-          if (!this.selectedTenant || !this.selectedUser?.newPassword) return;
-          this.status = { type: '', message: '' };
-          try {
-            const response = await fetch('/internal/admin/api/passwords', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                tenant_id: this.selectedTenant.tenantId,
-                user_sub: this.selectedUser.sub,
-                password: this.selectedUser.newPassword
-              })
-            });
-            const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error_description || 'Unable to set password');
-            this.selectedUser.newPassword = '';
-            this.status = { type: 'ok', message: 'Password updated.' };
-          } catch (error) {
-            this.status = { type: 'error', message: error.message };
-          }
-        },
-        async resetUserMfa() {
-          if (!this.selectedTenant || !this.selectedUser) return;
-          if (!confirm('Reset the authenticator enrollment for this user?')) return;
-          this.status = { type: '', message: '' };
-          try {
-            const response = await fetch('/internal/admin/api/mfa', {
-              method: 'DELETE',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                tenant_id: this.selectedTenant.tenantId,
-                user_sub: this.selectedUser.sub
-              })
-            });
-            const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error_description || 'Unable to reset 2FA');
-            this.status = { type: 'ok', message: payload.deleted ? '2FA enrollment reset.' : 'No 2FA enrollment existed.' };
-          } catch (error) {
-            this.status = { type: 'error', message: error.message };
-          }
-        },
-        isUserSharedWith(targetTenant) {
-          if (!this.selectedTenant || !this.selectedUser) return false;
-          return (targetTenant.sharedUsers || []).some((entry) => entry.tenantId === this.selectedTenant.tenantId && entry.userSub === this.selectedUser.sub);
-        },
-        setUserShare(targetTenant, checked) {
-          if (!this.selectedTenant || !this.selectedUser) return;
-          targetTenant.sharedUsers = targetTenant.sharedUsers || [];
-          targetTenant.sharedUsers = targetTenant.sharedUsers.filter((entry) => !(entry.tenantId === this.selectedTenant.tenantId && entry.userSub === this.selectedUser.sub));
-          if (checked) {
-            targetTenant.sharedUsers.push({ tenantId: this.selectedTenant.tenantId, userSub: this.selectedUser.sub });
-          }
-        },
-        selectedShareReference() {
-          const [tenantId, ...userSubParts] = String(this.selectedShareUserKey || '').split(':');
-          const userSub = userSubParts.join(':');
-          return tenantId && userSub ? { tenantId, userSub } : undefined;
-        },
-        isSelectedShareEnabled() {
-          const reference = this.selectedShareReference();
-          if (!this.selectedTenant || !reference) return false;
-          return (this.selectedTenant.sharedUsers || []).some((entry) => entry.tenantId === reference.tenantId && entry.userSub === reference.userSub);
-        },
-        setSelectedShare(checked) {
-          const reference = this.selectedShareReference();
-          if (!this.selectedTenant || !reference) return;
-          this.selectedTenant.sharedUsers = this.selectedTenant.sharedUsers || [];
-          this.selectedTenant.sharedUsers = this.selectedTenant.sharedUsers.filter((entry) => !(entry.tenantId === reference.tenantId && entry.userSub === reference.userSub));
-          if (checked) {
-            this.selectedTenant.sharedUsers.push(reference);
-          }
-        },
-        removeClient() {
-          if (!confirm('Delete this client?')) return;
-          this.selectedTenant.clients.splice(this.selectedClientIndex, 1);
-          this.selectedClientIndex = Math.max(0, this.selectedClientIndex - 1);
-        },
-        addUser() {
-          this.selectedTenant.users.push({ sub: 'new-user', name: 'New User', email: 'user@example.test', preferred_username: 'user@example.test', roles: [], rolesText: '', claims: {}, claimsText: '{}' });
-          this.selectedUserIndex = this.selectedTenant.users.length - 1;
-        },
-        removeUser() {
-          if (!confirm('Delete this user?')) return;
-          this.selectedTenant.users.splice(this.selectedUserIndex, 1);
-          this.selectedUserIndex = Math.max(0, this.selectedUserIndex - 1);
-        }
+    const state = {
+      loading: true,
+      saving: false,
+      editable: { tenants: [] },
+      selectedTenantId: '',
+      selectedClientIndex: 0,
+      selectedUserIndex: 0,
+      selectedShareUserKey: '',
+      csrfToken: '',
+      themeMode: localStorage.getItem('az_oidc_admin_theme') || 'system',
+      status: { type: '', message: '' }
+    };
+    const selectedTenant = () => state.editable.tenants.find((tenant) => tenant.tenantId === state.selectedTenantId) || state.editable.tenants[0];
+    const selectedClient = () => selectedTenant()?.clients[state.selectedClientIndex];
+    const selectedUser = () => selectedTenant()?.users[state.selectedUserIndex];
+    const shareTargets = () => selectedTenant() && selectedUser() ? state.editable.tenants.filter((tenant) => tenant !== selectedTenant()) : [];
+    const shareUserOptions = () => selectedTenant()
+      ? state.editable.tenants.filter((tenant) => tenant !== selectedTenant()).flatMap((tenant) => tenant.users.map((user) => ({
+        key: tenant.tenantId + ':' + user.sub,
+        tenantId: tenant.tenantId,
+        userSub: user.sub,
+        label: (user.name || user.preferred_username || user.sub) + ' - ' + (tenant.displayName || tenant.tenantId)
+      })))
+      : [];
+    const render = () => {
+      const tenant = selectedTenant();
+      const client = selectedClient();
+      const user = selectedUser();
+      const totalClients = state.editable.tenants.reduce((sum, item) => sum + item.clients.length, 0);
+      const totalUsers = state.editable.tenants.reduce((sum, item) => sum + item.users.length, 0);
+      document.getElementById('app').innerHTML = \`
+        <aside>
+          <div class="brand"><h1>OIDC Admin</h1><p>Signed in as ${escapeHtml(user.preferred_username)}</p></div>
+          <div class="theme-control" aria-label="Theme">
+            <span>Theme</span>
+            <div class="segmented">
+              <button type="button" data-action="theme" data-theme="system" aria-pressed="\${state.themeMode === 'system'}">Auto</button>
+              <button type="button" data-action="theme" data-theme="light" aria-pressed="\${state.themeMode === 'light'}">Light</button>
+              <button type="button" data-action="theme" data-theme="dark" aria-pressed="\${state.themeMode === 'dark'}">Dark</button>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="primary" type="button" data-action="save" \${state.saving || state.loading ? 'disabled' : ''}>Save</button>
+            <button type="button" data-action="load" \${state.saving || state.loading ? 'disabled' : ''}>Reload</button>
+          </div>
+          \${state.status.message ? \`<div class="status \${escapeText(state.status.type)}" role="status">\${escapeText(state.status.message)}</div>\` : ''}
+          <nav class="tenant-list" aria-label="Tenants">\${state.editable.tenants.map((item, index) => \`
+            <button class="tenant-tab" type="button" data-action="select-tenant" data-index="\${index}" aria-current="\${item.tenantId === state.selectedTenantId}">
+              <span>\${escapeText(item.displayName || item.tenantId)}</span>
+              <small class="mono">\${escapeText(item.tenantId)}</small>
+            </button>\`).join('')}</nav>
+          <button type="button" data-action="add-tenant">Add Tenant</button>
+        </aside>
+        <main aria-live="polite">
+          <div class="toolbar">
+            <div><strong>\${escapeText(tenant ? tenant.displayName : 'No tenant selected')}</strong><p class="meta">\${state.editable.tenants.length} tenants · \${totalClients} clients · \${totalUsers} users</p></div>
+            \${tenant ? '<div class="actions"><button type="button" data-action="duplicate-tenant">Duplicate</button><button class="danger" type="button" data-action="remove-tenant">Delete Tenant</button></div>' : ''}
+          </div>
+          \${state.loading ? '<div class="empty">Loading configuration...</div>' : (!tenant ? '<div class="empty">Create a tenant to begin.</div>' : renderTenant(tenant, client, user))}
+        </main>\`;
+      bind();
+    };
+    const renderTenant = (tenant, client, user) => \`
+      <section class="panel" aria-labelledby="tenant-settings-title">
+        <div class="panel-header"><h2 id="tenant-settings-title">Tenant Settings</h2></div>
+        <div class="panel-body">
+          <div class="grid">
+            <label>Tenant ID <input data-field="tenant.tenantId" value="\${escapeText(tenant.tenantId)}"></label>
+            <label>Display Name <input data-field="tenant.displayName" value="\${escapeText(tenant.displayName)}"></label>
+            <label>Session Lifetime Seconds <input data-field="tenant.sessionLifetimeSeconds" type="number" min="1" step="1" value="\${Number(tenant.sessionLifetimeSeconds || 1)}"></label>
+            <label>Devices JSON <textarea data-field="tenant.devicesText" spellcheck="false">\${escapeText(tenant.devicesText || '[]')}</textarea></label>
+          </div>
+          <div class="checks">
+            <label class="check"><input data-field="tenant.secure" type="checkbox" \${tenant.secure ? 'checked' : ''}> Secure login</label>
+            <label class="check"><input data-field="tenant.enableSessions" type="checkbox" \${tenant.enableSessions ? 'checked' : ''}> Login sessions</label>
+            <label class="check"><input data-field="tenant.twoFactorEnabled" type="checkbox" \${tenant.twoFactorEnabled ? 'checked' : ''}> 2FA enabled</label>
+            <label class="check"><input data-field="tenant.twoFactorMandatory" type="checkbox" \${tenant.twoFactorMandatory ? 'checked' : ''}> 2FA mandatory</label>
+          </div>
+          \${renderSharedAccounts(tenant)}
+        </div>
+      </section>
+      <section class="panel" aria-labelledby="clients-title">
+        <div class="panel-header"><h2 id="clients-title">Clients</h2><button type="button" data-action="add-client">Add Client</button></div>
+        <div class="panel-body split">
+          <div class="row-list">\${tenant.clients.map((item, index) => \`<button class="row-button" type="button" data-action="select-client" data-index="\${index}" aria-current="\${index === state.selectedClientIndex}"><strong>\${escapeText(item.clientId || 'New client')}</strong><small>\${(item.redirectUris || []).length} redirect URIs · \${item.enabled ? 'enabled' : 'disabled'}</small></button>\`).join('')}</div>
+          \${client ? renderClient(client) : '<div class="empty">Select or add a client.</div>'}
+        </div>
+      </section>
+      <section class="panel" aria-labelledby="users-title">
+        <div class="panel-header"><h2 id="users-title">Users</h2><button type="button" data-action="add-user">Add User</button></div>
+        <div class="panel-body split">
+          <div class="row-list">\${tenant.users.map((item, index) => \`<button class="row-button" type="button" data-action="select-user" data-index="\${index}" aria-current="\${index === state.selectedUserIndex}"><strong>\${escapeText(item.name || 'New user')}</strong><small>\${escapeText(item.preferred_username || item.email || item.sub)}</small></button>\`).join('')}</div>
+          \${user ? renderUser(tenant, user) : '<div class="empty">Select or add a user.</div>'}
+        </div>
+      </section>\`;
+    const renderSharedAccounts = (tenant) => {
+      const options = shareUserOptions();
+      if (!options.length) return '';
+      const reference = selectedShareReference();
+      const enabled = reference && (tenant.sharedUsers || []).some((entry) => entry.tenantId === reference.tenantId && entry.userSub === reference.userSub);
+      return \`<div class="share-box"><strong>Shared Accounts</strong><label>Source User <select data-field="selectedShareUserKey"><option value="">Select a user</option>\${options.map((option) => \`<option value="\${escapeText(option.key)}" \${option.key === state.selectedShareUserKey ? 'selected' : ''}>\${escapeText(option.label)}</option>\`).join('')}</select></label>\${state.selectedShareUserKey ? \`<label class="check"><input type="checkbox" data-action="selected-share" \${enabled ? 'checked' : ''}> Share selected user with this tenant</label>\` : ''}</div>\`;
+    };
+    const renderClient = (client) => \`<div class="panel-body">
+      <div class="grid"><label>Client ID <input data-field="client.clientId" value="\${escapeText(client.clientId)}"></label><div class="secret-row"><label>Client Secret <input data-field="client.clientSecret" autocomplete="new-password" value="\${escapeText(client.clientSecret || '')}"></label><button type="button" data-action="generate-client-secret">Generate</button></div></div>
+      <div class="checks"><label class="check"><input data-field="client.enabled" type="checkbox" \${client.enabled ? 'checked' : ''}> Enabled</label></div>
+      <label>Redirect URIs <textarea data-field="client.redirectUrisText" spellcheck="false">\${escapeText(client.redirectUrisText || '')}</textarea></label>
+      <label>Allowed Scopes <textarea data-field="client.allowedScopesText" spellcheck="false">\${escapeText(client.allowedScopesText || '')}</textarea></label>
+      <div class="actions"><button class="danger" type="button" data-action="remove-client">Delete Client</button></div>
+    </div>\`;
+    const renderUser = (tenant, user) => \`<div class="panel-body">
+      <div class="grid"><label>Subject <input data-field="user.sub" value="\${escapeText(user.sub)}"></label><label>Name <input data-field="user.name" value="\${escapeText(user.name)}"></label><label>Email <input data-field="user.email" type="email" value="\${escapeText(user.email)}"></label><label>Preferred Username <input data-field="user.preferred_username" value="\${escapeText(user.preferred_username)}"></label></div>
+      <label>Roles <textarea data-field="user.rolesText" spellcheck="false">\${escapeText(user.rolesText || '')}</textarea></label>
+      <label>Claims JSON <textarea data-field="user.claimsText" spellcheck="false">\${escapeText(user.claimsText || '{}')}</textarea></label>
+      <div class="secret-row"><label>New Password <input data-field="user.newPassword" autocomplete="new-password" type="password" value="\${escapeText(user.newPassword || '')}"></label><button type="button" data-action="generate-user-password">Generate</button><button type="button" data-action="set-user-password" \${user.newPassword ? '' : 'disabled'}>Set</button></div>
+      <div class="actions"><button type="button" data-action="reset-user-mfa">Reset 2FA</button></div>
+      \${renderShareTargets(tenant, user)}
+      <div class="actions"><button class="danger" type="button" data-action="remove-user">Delete User</button></div>
+    </div>\`;
+    const renderShareTargets = (tenant, user) => {
+      const targets = shareTargets();
+      if (!targets.length) return '';
+      return \`<div class="share-box"><strong>Share This User With</strong>\${targets.map((target, index) => {
+        const checked = (target.sharedUsers || []).some((entry) => entry.tenantId === tenant.tenantId && entry.userSub === user.sub);
+        return \`<label class="check"><input type="checkbox" data-action="user-share" data-index="\${index}" \${checked ? 'checked' : ''}> \${escapeText(target.displayName || target.tenantId)}</label>\`;
+      }).join('')}</div>\`;
+    };
+    const bind = () => {
+      document.querySelectorAll('[data-field]').forEach((element) => element.addEventListener('change', updateField));
+      document.querySelectorAll('[data-action]').forEach((element) => element.addEventListener('click', handleAction));
+    };
+    const updateField = (event) => {
+      const field = event.currentTarget.dataset.field;
+      const tenant = selectedTenant();
+      const client = selectedClient();
+      const user = selectedUser();
+      const value = event.currentTarget.type === 'checkbox' ? event.currentTarget.checked : event.currentTarget.value;
+      if (field === 'tenant.tenantId') { tenant.tenantId = value.trim(); state.selectedTenantId = tenant.tenantId; }
+      if (field === 'tenant.displayName') tenant.displayName = value.trim();
+      if (field === 'tenant.sessionLifetimeSeconds') tenant.sessionLifetimeSeconds = Number(value);
+      if (field === 'tenant.devicesText') tenant.devicesText = value;
+      if (field === 'tenant.secure') tenant.secure = value;
+      if (field === 'tenant.enableSessions') tenant.enableSessions = value;
+      if (field === 'tenant.twoFactorEnabled') tenant.twoFactorEnabled = value;
+      if (field === 'tenant.twoFactorMandatory') { tenant.twoFactorMandatory = value; tenant.twoFactorEnabled = tenant.twoFactorEnabled || value; }
+      if (field === 'client.clientId') client.clientId = value.trim();
+      if (field === 'client.clientSecret') client.clientSecret = value;
+      if (field === 'client.enabled') client.enabled = value;
+      if (field === 'client.redirectUrisText') client.redirectUrisText = value;
+      if (field === 'client.allowedScopesText') client.allowedScopesText = value;
+      if (field === 'user.sub') user.sub = value.trim();
+      if (field === 'user.name') user.name = value.trim();
+      if (field === 'user.email') user.email = value.trim();
+      if (field === 'user.preferred_username') user.preferred_username = value.trim();
+      if (field === 'user.rolesText') user.rolesText = value;
+      if (field === 'user.claimsText') user.claimsText = value;
+      if (field === 'user.newPassword') user.newPassword = value;
+      if (field === 'selectedShareUserKey') state.selectedShareUserKey = value;
+      render();
+    };
+    const handleAction = async (event) => {
+      const action = event.currentTarget.dataset.action;
+      if (action === 'theme') return setTheme(event.currentTarget.dataset.theme);
+      if (action === 'load') return load();
+      if (action === 'save') return save();
+      if (action === 'select-tenant') return selectTenant(Number(event.currentTarget.dataset.index));
+      if (action === 'add-tenant') return addTenant();
+      if (action === 'duplicate-tenant') return duplicateTenant();
+      if (action === 'remove-tenant') return removeTenant();
+      if (action === 'select-client') { state.selectedClientIndex = Number(event.currentTarget.dataset.index); return render(); }
+      if (action === 'add-client') return addClient();
+      if (action === 'generate-client-secret') { selectedClient().clientSecret = 'az_mock-sk_' + randomBase64Url(24); return render(); }
+      if (action === 'remove-client') return removeClient();
+      if (action === 'select-user') { state.selectedUserIndex = Number(event.currentTarget.dataset.index); return render(); }
+      if (action === 'add-user') return addUser();
+      if (action === 'generate-user-password') { selectedUser().newPassword = 'az_mock-pw_' + randomBase64Url(18); return render(); }
+      if (action === 'set-user-password') return setUserPassword();
+      if (action === 'reset-user-mfa') return resetUserMfa();
+      if (action === 'remove-user') return removeUser();
+      if (action === 'user-share') return setUserShare(shareTargets()[Number(event.currentTarget.dataset.index)], event.currentTarget.checked);
+      if (action === 'selected-share') return setSelectedShare(event.currentTarget.checked);
+    };
+    const setTheme = (theme) => {
+      state.themeMode = theme;
+      if (theme === 'system') localStorage.removeItem('az_oidc_admin_theme');
+      else localStorage.setItem('az_oidc_admin_theme', theme);
+      if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+      else delete document.documentElement.dataset.theme;
+      render();
+    };
+    const load = async () => {
+      state.loading = true; state.status = { type: '', message: '' }; render();
+      try {
+        const response = await fetch('/internal/admin/api/config');
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error_description || 'Unable to load config');
+        state.editable = decorate(payload.config);
+        state.csrfToken = payload.csrfToken || '';
+        state.selectedTenantId = state.editable.tenants[0]?.tenantId || '';
+        state.selectedClientIndex = 0; state.selectedUserIndex = 0; state.selectedShareUserKey = '';
+      } catch (error) {
+        state.status = { type: 'error', message: error.message };
+      } finally {
+        state.loading = false; render();
       }
-    }).mount('#app');
+    };
+    const save = async () => {
+      state.saving = true; state.status = { type: '', message: '' }; render();
+      try {
+        const response = await fetch('/internal/admin/api/config', { method: 'PUT', headers: adminJsonHeaders(), body: JSON.stringify({ config: clean(state.editable) }) });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error_description || 'Unable to save config');
+        state.editable = decorate(payload.config);
+        state.status = { type: 'ok', message: 'Configuration saved.' };
+      } catch (error) {
+        state.status = { type: 'error', message: error.message };
+      } finally {
+        state.saving = false; render();
+      }
+    };
+    const selectTenant = (index) => {
+      state.selectedTenantId = state.editable.tenants[index]?.tenantId || '';
+      state.selectedClientIndex = 0; state.selectedUserIndex = 0; state.selectedShareUserKey = ''; render();
+    };
+    const addTenant = () => {
+      const tenant = decorate({ tenants: [blankTenant()] }).tenants[0];
+      tenant.clients.push({ clientId: 'new-client', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
+      tenant.users.push({ sub: 'new-user', name: 'New User', email: 'user@example.test', preferred_username: 'user@example.test', roles: [], rolesText: '', claims: {}, claimsText: '{}' });
+      state.editable.tenants.push(tenant);
+      state.selectedTenantId = tenant.tenantId; render();
+    };
+    const duplicateTenant = () => {
+      const tenant = clone(selectedTenant());
+      tenant.tenantId += '-copy'; tenant.displayName += ' Copy';
+      state.editable.tenants.push(tenant); state.selectedTenantId = tenant.tenantId; render();
+    };
+    const removeTenant = () => {
+      if (!confirm('Delete this tenant from the config?')) return;
+      state.editable.tenants = state.editable.tenants.filter((tenant) => tenant !== selectedTenant());
+      state.selectedTenantId = state.editable.tenants[0]?.tenantId || ''; render();
+    };
+    const addClient = () => {
+      selectedTenant().clients.push({ clientId: 'new-client', clientSecret: '', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
+      state.selectedClientIndex = selectedTenant().clients.length - 1; render();
+    };
+    const removeClient = () => {
+      if (!confirm('Delete this client?')) return;
+      selectedTenant().clients.splice(state.selectedClientIndex, 1);
+      state.selectedClientIndex = Math.max(0, state.selectedClientIndex - 1); render();
+    };
+    const addUser = () => {
+      selectedTenant().users.push({ sub: 'new-user', name: 'New User', email: 'user@example.test', preferred_username: 'user@example.test', roles: [], rolesText: '', claims: {}, claimsText: '{}' });
+      state.selectedUserIndex = selectedTenant().users.length - 1; render();
+    };
+    const removeUser = () => {
+      if (!confirm('Delete this user?')) return;
+      selectedTenant().users.splice(state.selectedUserIndex, 1);
+      state.selectedUserIndex = Math.max(0, state.selectedUserIndex - 1); render();
+    };
+    const setUserPassword = async () => {
+      const tenant = selectedTenant(); const user = selectedUser();
+      if (!tenant || !user?.newPassword) return;
+      try {
+        const response = await fetch('/internal/admin/api/passwords', { method: 'POST', headers: adminJsonHeaders(), body: JSON.stringify({ tenant_id: tenant.tenantId, user_sub: user.sub, password: user.newPassword }) });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error_description || 'Unable to set password');
+        user.newPassword = ''; state.status = { type: 'ok', message: 'Password updated.' };
+      } catch (error) {
+        state.status = { type: 'error', message: error.message };
+      }
+      render();
+    };
+    const resetUserMfa = async () => {
+      const tenant = selectedTenant(); const user = selectedUser();
+      if (!tenant || !user || !confirm('Reset the authenticator enrollment for this user?')) return;
+      try {
+        const response = await fetch('/internal/admin/api/mfa', { method: 'DELETE', headers: adminJsonHeaders(), body: JSON.stringify({ tenant_id: tenant.tenantId, user_sub: user.sub }) });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error_description || 'Unable to reset 2FA');
+        state.status = { type: 'ok', message: payload.deleted ? '2FA enrollment reset.' : 'No 2FA enrollment existed.' };
+      } catch (error) {
+        state.status = { type: 'error', message: error.message };
+      }
+      render();
+    };
+    const setUserShare = (targetTenant, checked) => {
+      const tenant = selectedTenant(); const user = selectedUser();
+      if (!tenant || !user || !targetTenant) return;
+      targetTenant.sharedUsers = (targetTenant.sharedUsers || []).filter((entry) => !(entry.tenantId === tenant.tenantId && entry.userSub === user.sub));
+      if (checked) targetTenant.sharedUsers.push({ tenantId: tenant.tenantId, userSub: user.sub });
+      render();
+    };
+    const selectedShareReference = () => {
+      const [tenantId, ...userSubParts] = String(state.selectedShareUserKey || '').split(':');
+      const userSub = userSubParts.join(':');
+      return tenantId && userSub ? { tenantId, userSub } : undefined;
+    };
+    const setSelectedShare = (checked) => {
+      const reference = selectedShareReference(); const tenant = selectedTenant();
+      if (!tenant || !reference) return;
+      tenant.sharedUsers = (tenant.sharedUsers || []).filter((entry) => !(entry.tenantId === reference.tenantId && entry.userSub === reference.userSub));
+      if (checked) tenant.sharedUsers.push(reference);
+      render();
+    };
+    const adminJsonHeaders = () => ({ 'content-type': 'application/json', 'x-csrf-token': state.csrfToken });
+    setTheme(state.themeMode);
+    load();
   </script>
 </body>
 </html>`;

@@ -192,6 +192,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       tenant,
       user: login.user.user,
       validation,
+      req,
       res,
       state: context.state,
       sessionSecret: context.sessionSecret,
@@ -282,7 +283,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
     if (!tenant) return;
-    clearSessionUser(res, tenant.tenantId);
+    clearSessionUser(req, res, config, tenant.tenantId);
     context.logger.info("mock session cleared", { tenantId: tenant.tenantId });
     const redirect = readString(req.query.post_logout_redirect_uri);
     if (redirect) {
@@ -601,13 +602,14 @@ function completeLogin(args: {
   user: MockUser;
   validation: { client: MockClient; request: ValidatedAuthorizeRequest };
   res: Response;
+  req: Request;
   state: OidcState;
   sessionSecret: string;
   logger: Logger;
   config: AppConfig;
 }): void {
   if (args.tenant.enableSessions) {
-    setSessionUser(args.res, args.tenant, args.user.sub, args.sessionSecret);
+    setSessionUser(args.req, args.res, args.config, args.tenant, args.user.sub, args.sessionSecret);
   }
   args.logger.info("mock user selected", {
     tenantId: args.tenant.tenantId,

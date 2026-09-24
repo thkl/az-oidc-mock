@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { decodeJwt } from "jose";
 import request from "supertest";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
@@ -189,7 +190,7 @@ describe("Azure OIDC mock", () => {
     expect(redirect.searchParams.get("redirect_uri")).toBe("http://127.0.0.1:3000/internal/admin/callback");
   });
 
-  it("serves the Vue admin UI after internal tenant login", async () => {
+  it("serves the self-contained admin UI after internal tenant login", async () => {
     const app = createApp({ config: adminConfig(), keys, logger: silentLogger });
     const agent = request.agent(app);
 
@@ -209,13 +210,14 @@ describe("Azure OIDC mock", () => {
     await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
 
     const page = await agent.get("/internal/admin").expect(200);
-    expect(page.text).toContain("https://unpkg.com/vue@3");
+    expect(page.text).not.toContain("https://unpkg.com");
     expect(page.text).toContain("OIDC Admin");
     expect(page.text).toContain("Generate");
     expect(page.text).toContain("az_mock-sk_");
 
     const api = await agent.get("/internal/admin/api/config").expect(200);
     expect(api.body.user.sub).toBe("admin-1");
+    expect(api.body.csrfToken).toEqual(expect.any(String));
     expect(api.body.config.tenants.some((tenant: { tenantId: string }) => tenant.tenantId === "internal")).toBe(true);
     expect(JSON.stringify(api.body.config)).not.toContain("local-secret");
     expect(api.body.config.tenants[0].clients[0].clientSecret).toBe("********");
@@ -317,6 +319,7 @@ describe("Azure OIDC mock", () => {
         })
         .expect(302);
       await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
+      const csrfToken = await adminCsrfToken(agent);
 
       const nextConfig = {
         ...currentConfig,
@@ -324,7 +327,7 @@ describe("Azure OIDC mock", () => {
           tenant.tenantId === "common" ? { ...tenant, displayName: "Updated Tenant" } : tenant
         )
       };
-      await agent.put("/internal/admin/api/config").send({ config: nextConfig }).expect(200);
+      await agent.put("/internal/admin/api/config").set("x-csrf-token", csrfToken).send({ config: nextConfig }).expect(200);
 
       expect(currentConfig.tenants.find((tenant) => tenant.tenantId === "common")?.displayName).toBe("Updated Tenant");
       const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as AppConfig;
@@ -354,7 +357,7 @@ describe("Azure OIDC mock", () => {
 
       await loginInternalAdmin(agent);
       const masked = await agent.get("/internal/admin/api/config").expect(200);
-      await agent.put("/internal/admin/api/config").send({ config: masked.body.config }).expect(200);
+      await agent.put("/internal/admin/api/config").set("x-csrf-token", masked.body.csrfToken).send({ config: masked.body.config }).expect(200);
 
       const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as AppConfig;
       expect(saved.tenants[0].clients[0].clientSecret).toBe("local-secret");
@@ -377,8 +380,10 @@ describe("Azure OIDC mock", () => {
       const agent = request.agent(app);
 
       await loginInternalAdmin(agent);
+      const csrfToken = await adminCsrfToken(agent);
       const update = await agent
         .post("/internal/admin/api/passwords")
+        .set("x-csrf-token", csrfToken)
         .send({ tenant_id: "common", user_sub: "user-1", password: "new-admin-password" })
         .expect(200);
 
@@ -386,6 +391,23 @@ describe("Azure OIDC mock", () => {
       expect(update.text).not.toContain("new-admin-password");
       expect(passwordStore.verify("common", "user-1", "new-admin-password")).toBe(true);
       expect(await fs.readFile(passwdPath, "utf8")).not.toContain("new-admin-password");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects admin UI mutations without the CSRF token", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-admin-"));
+    try {
+      const configPath = path.join(dir, "config.json");
+      const currentConfig = adminConfig();
+      await fs.writeFile(configPath, `${JSON.stringify(currentConfig, null, 2)}\n`, "utf8");
+      const app = createApp({ config: currentConfig, keys, logger: silentLogger, configPath });
+      const agent = request.agent(app);
+
+      await loginInternalAdmin(agent);
+      const rejected = await agent.put("/internal/admin/api/config").send({ config: currentConfig }).expect(403);
+      expect(rejected.body.error).toBe("csrf_failed");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -422,6 +444,7 @@ describe("Azure OIDC mock", () => {
         })
         .expect(302);
       await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
+      const csrfToken = await adminCsrfToken(agent);
 
       const nextConfig = {
         ...currentConfig,
@@ -436,7 +459,7 @@ describe("Azure OIDC mock", () => {
             : tenant
         )
       };
-      await agent.put("/internal/admin/api/config").send({ config: nextConfig }).expect(200);
+      await agent.put("/internal/admin/api/config").set("x-csrf-token", csrfToken).send({ config: nextConfig }).expect(200);
 
       const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as AppConfig;
       expect(saved.tenants[0].clients[0].allowedScopes).toEqual(["openid", "profile", "email"]);
@@ -678,6 +701,39 @@ describe("Azure OIDC mock", () => {
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("marks secure login session cookies as Secure when the base URL is HTTPS", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passwd-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      const app = createApp({
+        config: { ...secureConfig(), baseUrl: "https://mock.example.test" },
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath)
+      });
+
+      const login = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(302);
+
+      expect(login.header["set-cookie"]?.join("\n")).toContain("Secure");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects oversized JSON request bodies", async () => {
+    const app = createApp({ config, keys, logger: silentLogger });
+
+    await request(app)
+      .post("/common/internal/token/verify")
+      .send({ token: "x".repeat(110 * 1024) })
+      .expect(413);
   });
 
   it("allows a shared account from another tenant to login and receive target-tenant tokens", async () => {
@@ -981,6 +1037,55 @@ describe("Azure OIDC mock", () => {
     expect(verified.body.claims.aud).toBe("local-app");
     expect(verified.body.claims.deviceid).toBe("machine-1");
     expect(verified.body.claims.scp).toBe("profile email offline_access");
+  });
+
+  it("does not let custom user claims override protected token claims", async () => {
+    const app = createApp({
+      config: {
+        ...config,
+        tenants: [
+          {
+            ...config.tenants[0],
+            users: [
+              {
+                ...config.tenants[0].users[0],
+                claims: {
+                  aud: "other-client",
+                  exp: 1,
+                  roles: ["Owner"],
+                  scp: "everything",
+                  sub: "attacker",
+                  tid: "other-tenant",
+                  department: "engineering"
+                }
+              }
+            ]
+          },
+          config.tenants[1]
+        ]
+      },
+      keys,
+      logger: silentLogger
+    });
+
+    const tokenSet = await issueTokenSet(app);
+    const accessToken = decodeJwt(tokenSet.body.access_token);
+    const idToken = decodeJwt(tokenSet.body.id_token);
+
+    expect(accessToken.aud).toBe("local-app");
+    expect(accessToken.exp).not.toBe(1);
+    expect(accessToken.roles).toEqual(["Admin"]);
+    expect(accessToken.scp).toBe("profile email offline_access");
+    expect(accessToken.sub).toBe("user-1");
+    expect(accessToken.tid).toBe("common");
+    expect(accessToken.department).toBe("engineering");
+
+    expect(idToken.aud).toBe("local-app");
+    expect(idToken.exp).not.toBe(1);
+    expect(idToken.roles).toEqual(["Admin"]);
+    expect(idToken.sub).toBe("user-1");
+    expect(idToken.tid).toBe("common");
+    expect(idToken.department).toBe("engineering");
   });
 
   it("serves OIDC userinfo for a valid access token", async () => {
@@ -1364,6 +1469,12 @@ async function loginInternalAdmin(agent: request.Agent): Promise<void> {
     })
     .expect(302);
   await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
+}
+
+async function adminCsrfToken(agent: request.Agent): Promise<string> {
+  const api = await agent.get("/internal/admin/api/config").expect(200);
+  expect(api.body.csrfToken).toEqual(expect.any(String));
+  return api.body.csrfToken;
 }
 
 function extractInputValue(html: string, name: string): string {

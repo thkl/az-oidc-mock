@@ -1,7 +1,6 @@
 import type { Request, Response } from "express";
 import crypto from "node:crypto";
 import type { AppConfig, MockTenant, MockUser } from "../config.js";
-import type { SigningKeys } from "./keys.js";
 import { resolveEffectiveUser } from "./users.js";
 
 export function getSessionUser(req: Request, config: AppConfig, tenant: MockTenant, sessionSecret: string): MockUser | undefined {
@@ -10,26 +9,28 @@ export function getSessionUser(req: Request, config: AppConfig, tenant: MockTena
   return userSub ? resolveEffectiveUser(config, tenant, userSub)?.user : undefined;
 }
 
-export function setSessionUser(res: Response, tenant: MockTenant, userSub: string, sessionSecret: string): void {
+export function setSessionUser(req: Request, res: Response, config: AppConfig, tenant: MockTenant, userSub: string, sessionSecret: string): void {
   const maxAge = tenant.sessionLifetimeSeconds * 1000;
   res.cookie(`az_oidc_mock_${tenant.tenantId}`, createSessionCookie(tenant.tenantId, userSub, Date.now() + maxAge, sessionSecret), {
     httpOnly: true,
     sameSite: "lax",
+    secure: isSecureRequest(req, config),
     path: `/${tenant.tenantId}`,
     maxAge
   });
 }
 
-export function clearSessionUser(res: Response, tenantId: string): void {
+export function clearSessionUser(req: Request, res: Response, config: AppConfig, tenantId: string): void {
   res.clearCookie(`az_oidc_mock_${tenantId}`, {
     httpOnly: true,
     sameSite: "lax",
+    secure: isSecureRequest(req, config),
     path: `/${tenantId}`
   });
 }
 
-export function createDefaultSessionSecret(keys: SigningKeys): string {
-  return crypto.createHash("sha256").update(JSON.stringify(keys.jwks)).digest("base64url");
+export function createDefaultSessionSecret(): string {
+  return crypto.randomBytes(32).toString("base64url");
 }
 
 export function constantTimeEqual(actualValue: string, expectedValue: string): boolean {
@@ -80,6 +81,11 @@ function verifySessionCookie(cookie: string, tenantId: string, sessionSecret: st
 
 function signSessionPayload(payload: string, sessionSecret: string): string {
   return crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
+}
+
+function isSecureRequest(req: Request, config: AppConfig): boolean {
+  const forwardedProto = req.header("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  return req.secure || forwardedProto === "https" || new URL(config.baseUrl).protocol === "https:";
 }
 
 function base64UrlJson(value: Record<string, unknown>): string {

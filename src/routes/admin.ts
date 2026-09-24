@@ -1,7 +1,8 @@
 import type { Express, Request } from "express";
+import crypto from "node:crypto";
 import type { AppConfig, MockClient, MockTenant, MockUser } from "../config.js";
 import { saveConfig } from "../config.js";
-import { getSessionUser, setSessionUser } from "../oidc/session.js";
+import { constantTimeEqual, getSessionUser, setSessionUser } from "../oidc/session.js";
 import { resolveEffectiveUser } from "../oidc/users.js";
 import { findClient, findTenant, findUser, validateRedirectUri, validateScopes } from "../oidc/validation.js";
 import { renderAdminPage, renderAdminSetupPage } from "../views/admin.js";
@@ -66,7 +67,7 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
-    setSessionUser(res, setup.tenant, resolvedUser.user.sub, context.sessionSecret);
+    setSessionUser(req, res, config, setup.tenant, resolvedUser.user.sub, context.sessionSecret);
     res.redirect("/internal/admin");
   });
 
@@ -78,7 +79,8 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     }
     res.json({
       config: redactConfigSecrets(context.getConfig()),
-      user: { sub: auth.user.sub, name: auth.user.name, email: auth.user.email }
+      user: { sub: auth.user.sub, name: auth.user.name, email: auth.user.email },
+      csrfToken: createAdminCsrfToken(auth.user, context.sessionSecret)
     });
   });
 
@@ -86,6 +88,10 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     const auth = getAdminRequestUser(context.getConfig(), req, context.sessionSecret);
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+      return;
+    }
+    if (!verifyAdminCsrfToken(req, auth.user, context.sessionSecret)) {
+      res.status(403).json({ error: "csrf_failed", error_description: "Admin CSRF token is missing or invalid" });
       return;
     }
     if (!context.configPath) {
@@ -113,6 +119,10 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     const auth = getAdminRequestUser(config, req, context.sessionSecret);
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+      return;
+    }
+    if (!verifyAdminCsrfToken(req, auth.user, context.sessionSecret)) {
+      res.status(403).json({ error: "csrf_failed", error_description: "Admin CSRF token is missing or invalid" });
       return;
     }
 
@@ -151,6 +161,10 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     const auth = getAdminRequestUser(config, req, context.sessionSecret);
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+      return;
+    }
+    if (!verifyAdminCsrfToken(req, auth.user, context.sessionSecret)) {
+      res.status(403).json({ error: "csrf_failed", error_description: "Admin CSRF token is missing or invalid" });
       return;
     }
 
@@ -261,6 +275,18 @@ function isAdminUser(user: MockUser): boolean {
 
 function adminAccessDescription(): string {
   return `Admin login requires the "${ADMIN_ROLE}" role or claims.${ADMIN_CLAIM}=true.`;
+}
+
+function createAdminCsrfToken(user: MockUser, sessionSecret: string): string {
+  return crypto
+    .createHmac("sha256", sessionSecret)
+    .update(`admin:${user.sub}`)
+    .digest("base64url");
+}
+
+function verifyAdminCsrfToken(req: Request, user: MockUser, sessionSecret: string): boolean {
+  const supplied = readString(req.header("x-csrf-token"));
+  return Boolean(supplied && constantTimeEqual(supplied, createAdminCsrfToken(user, sessionSecret)));
 }
 
 function createAdminAuthorizeUrl(config: AppConfig): URL {
