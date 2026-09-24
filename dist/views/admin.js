@@ -8,63 +8,118 @@ export function renderAdminPage(user) {
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <style>
     :root {
-      color-scheme: dark;
-      --bg: #101319;
-      --surface: #171d26;
-      --surface-2: #202836;
-      --line: #344156;
-      --text: #eef4fb;
-      --muted: #a9b6c8;
-      --primary: #2dd4bf;
-      --primary-dark: #0f766e;
-      --danger: #fb7185;
-      --warning: #fbbf24;
-      --focus: #f8fafc;
+      color-scheme: light;
+      --bg: #eaf4ff;
+      --surface: rgba(255, 255, 255, .58);
+      --surface-2: rgba(255, 255, 255, .72);
+      --field: rgba(255, 255, 255, .78);
+      --line: rgba(76, 129, 190, .24);
+      --line-strong: rgba(49, 102, 175, .38);
+      --text: #14345f;
+      --muted: #527094;
+      --primary: #2563eb;
+      --primary-soft: rgba(37, 99, 235, .10);
+      --danger: #dc2626;
+      --focus: #1d4ed8;
+      --shadow: 0 18px 52px rgba(37, 99, 235, .13);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-weight: 400;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100dvh; background: var(--bg); color: var(--text); }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      background:
+        radial-gradient(circle at 12% 8%, rgba(59, 130, 246, .24), transparent 30%),
+        radial-gradient(circle at 86% 18%, rgba(14, 165, 233, .20), transparent 28%),
+        linear-gradient(135deg, #f8fbff 0%, var(--bg) 45%, #dbeafe 100%);
+      color: var(--text);
+      font-weight: 400;
+    }
     button, input, textarea, select { font: inherit; }
-    button { min-height: 40px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); color: var(--text); padding: 8px 12px; cursor: pointer; }
-    button:hover { border-color: var(--primary); }
-    button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-    button.primary { background: var(--primary); border-color: var(--primary); color: #042f2e; font-weight: 700; }
-    button.danger { border-color: color-mix(in srgb, var(--danger), white 12%); color: #fecdd3; }
+    button {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, .54);
+      color: var(--text);
+      padding: 7px 11px;
+      cursor: pointer;
+      font-weight: 450;
+      box-shadow: 0 1px 0 rgba(255, 255, 255, .55) inset;
+      transition: border-color .16s ease, background .16s ease, box-shadow .16s ease;
+    }
+    button:hover { border-color: var(--line-strong); background: rgba(255, 255, 255, .72); }
+    button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    button.primary { background: linear-gradient(180deg, #3b82f6, #2563eb); border-color: rgba(37, 99, 235, .52); color: #fff; font-weight: 560; }
+    button.danger { border-color: rgba(220, 38, 38, .34); color: #991b1b; }
     button[disabled] { opacity: .55; cursor: not-allowed; }
-    input, textarea, select { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: 6px; background: #0d1118; color: var(--text); padding: 8px 10px; }
-    textarea { min-height: 86px; resize: vertical; font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; }
-    label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; font-weight: 650; }
+    input, textarea, select { width: 100%; min-height: 38px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--text); padding: 7px 10px; box-shadow: 0 1px 0 rgba(255, 255, 255, .55) inset; }
+    textarea { min-height: 78px; resize: vertical; font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.42; }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 520; }
     .shell { min-height: 100dvh; display: grid; grid-template-columns: minmax(240px, 300px) 1fr; }
-    aside { border-right: 1px solid var(--line); background: #0d1118; padding: 18px; display: grid; align-content: start; gap: 16px; }
+    aside {
+      border-right: 1px solid rgba(255, 255, 255, .42);
+      background: rgba(255, 255, 255, .46);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      padding: 18px;
+      display: grid;
+      align-content: start;
+      gap: 14px;
+      box-shadow: 12px 0 44px rgba(37, 99, 235, .08);
+    }
     main { min-width: 0; padding: 18px; display: grid; gap: 16px; align-content: start; }
     .brand { display: grid; gap: 4px; }
-    .brand h1 { margin: 0; font-size: 18px; line-height: 1.2; }
-    .brand p, .meta { margin: 0; color: var(--muted); font-size: 13px; }
-    .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px; }
+    .brand h1 { margin: 0; font-size: 18px; line-height: 1.2; font-weight: 560; letter-spacing: 0; }
+    .brand p, .meta { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid rgba(255, 255, 255, .56);
+      border-radius: 8px;
+      background: var(--surface);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      padding: 12px;
+      box-shadow: var(--shadow);
+    }
+    .toolbar strong { font-weight: 560; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .tenant-list { display: grid; gap: 8px; }
     .tenant-tab { width: 100%; display: grid; gap: 4px; text-align: left; padding: 10px; }
-    .tenant-tab[aria-current="true"] { border-color: var(--primary); background: #12312f; }
-    .tenant-tab span { font-weight: 700; }
+    .tenant-tab[aria-current="true"] { border-color: rgba(37, 99, 235, .42); background: var(--primary-soft); box-shadow: 0 8px 24px rgba(37, 99, 235, .10); }
+    .tenant-tab span { font-weight: 560; }
     .tenant-tab small { color: var(--muted); overflow-wrap: anywhere; }
-    .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
-    .panel-header { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .panel-header h2 { margin: 0; font-size: 16px; }
-    .panel-body { padding: 14px; display: grid; gap: 14px; }
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .triple { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-    .split { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 14px; }
+    .panel {
+      border: 1px solid rgba(255, 255, 255, .58);
+      border-radius: 8px;
+      background: var(--surface);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      box-shadow: var(--shadow);
+    }
+    .panel-header { padding: 11px 13px; border-bottom: 1px solid rgba(76, 129, 190, .20); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .panel-header h2 { margin: 0; font-size: 15px; font-weight: 560; }
+    .panel-body { padding: 13px; display: grid; gap: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .triple { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .split { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 12px; }
     .row-list { display: grid; gap: 8px; align-content: start; }
     .row-button { display: grid; gap: 4px; text-align: left; padding: 10px; }
-    .row-button[aria-current="true"] { border-color: var(--primary); background: #12312f; }
+    .row-button strong { font-weight: 540; }
+    .row-button[aria-current="true"] { border-color: rgba(37, 99, 235, .42); background: var(--primary-soft); }
     .row-button small { color: var(--muted); overflow-wrap: anywhere; }
-    .checks { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
-    .check { display: inline-flex; gap: 8px; align-items: center; color: var(--text); font-size: 14px; }
+    .checks { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+    .check { display: inline-flex; gap: 8px; align-items: center; color: var(--text); font-size: 13px; font-weight: 420; }
     .check input { width: 18px; min-height: 18px; }
-    .status { border-radius: 6px; padding: 9px 11px; font-size: 13px; border: 1px solid var(--line); color: var(--muted); }
-    .status.ok { border-color: #166534; color: #bbf7d0; background: #052e1a; }
-    .status.error { border-color: #9f1239; color: #fecdd3; background: #3b0713; }
-    .empty { color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 16px; }
+    .status { border-radius: 6px; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); color: var(--muted); background: rgba(255, 255, 255, .50); }
+    .status.ok { border-color: rgba(22, 101, 52, .26); color: #166534; background: rgba(220, 252, 231, .68); }
+    .status.error { border-color: rgba(190, 18, 60, .28); color: #9f1239; background: rgba(255, 228, 230, .72); }
+    .empty { color: var(--muted); border: 1px dashed rgba(76, 129, 190, .32); border-radius: 8px; padding: 15px; background: rgba(255, 255, 255, .34); }
     .mono { font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     @media (max-width: 900px) {
       .shell { grid-template-columns: 1fr; }
