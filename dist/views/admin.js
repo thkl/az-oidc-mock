@@ -507,6 +507,7 @@ export function renderAdminPage(user) {
           <div class="actions">
             <button class="primary" type="button" data-action="save" \${state.saving || state.loading ? 'disabled' : ''}>Save</button>
             <button type="button" data-action="load" \${state.saving || state.loading ? 'disabled' : ''}>Reload</button>
+            <button type="button" data-action="logout">Sign out</button>
           </div>
           \${state.status.message ? \`<div class="status \${escapeText(state.status.type)}" role="status">\${escapeText(state.status.message)}</div>\` : ''}
           <nav class="tenant-list" aria-label="Tenants">\${state.editable.tenants.map((item, index) => \`
@@ -629,6 +630,7 @@ export function renderAdminPage(user) {
     const handleAction = async (event) => {
       const action = event.currentTarget.dataset.action;
       if (action === 'theme') return setTheme(event.currentTarget.dataset.theme);
+      if (action === 'logout') { location.assign('/internal/oauth2/v2.0/logout?post_logout_redirect_uri=' + encodeURIComponent('/internal/admin')); return; }
       if (action === 'load') return load();
       if (action === 'save') return save();
       if (action === 'select-tenant') return selectTenant(Number(event.currentTarget.dataset.index));

@@ -214,6 +214,7 @@ describe("Azure OIDC mock", () => {
     expect(page.text).not.toContain("https://unpkg.com");
     expect(page.text).toContain("OIDC Admin");
     expect(page.text).toContain("Generate");
+    expect(page.text).toContain("Sign out");
     expect(page.text).toContain("az_mock-sk_");
 
     const api = await agent.get("/internal/admin/api/config").expect(200);
