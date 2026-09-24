@@ -79,6 +79,10 @@ export function createApp({
     next();
   });
 
+  app.get("/", (_req, res)=>{
+    res.redirect('/internal/admin');
+  })
+
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
   });
