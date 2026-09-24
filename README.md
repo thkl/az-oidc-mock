@@ -239,6 +239,27 @@ Refresh tokens are stored in `refresh-tokens.json` next to the active config fil
 
 Refresh-token renewal also checks the device that was used for the original login. If that device is later removed from config or set to `"enabled": false`, renewal fails with `invalid_grant`.
 
+## Shared Accounts
+
+Use `sharedUsers` on a tenant when an account from one tenant should also be accepted by another tenant.
+
+```json
+{
+  "tenantId": "tenant-b",
+  "displayName": "Tenant B",
+  "sharedUsers": [
+    {
+      "tenantId": "tenant-a",
+      "userSub": "00000000-0000-0000-0000-000000000001"
+    }
+  ]
+}
+```
+
+The user profile and password remain owned by the source tenant. If `tenant-b` is secure, logging in as the shared account checks the password stored under `tenant-a:userSub` in `passwd`.
+
+Tokens are still issued for the target tenant. In the example above, the issued token has the `tenant-b` issuer/audience context, while user claims come from the source account.
+
 ## Secure Tenant Login
 
 Set `"secure": true` on a tenant to make its interactive login behave more like a real SSO login. The page no longer lists configured users. Instead, the user enters their email or `preferred_username` and password.

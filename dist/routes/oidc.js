@@ -4,7 +4,8 @@ import { createTotpSecret, createTotpUri, verifyTotpSecret } from "../oidc/mfa.j
 import { clearSessionUser, getSessionUser, setSessionUser } from "../oidc/session.js";
 import { isInactiveRefreshTokenDevice, resolveActiveTokenSubject } from "../oidc/token-subject.js";
 import { createAccessToken, createIdToken } from "../oidc/tokens.js";
-import { findClient, findDevice, findUser, parseScopes, validateRedirectUri, validateScopes } from "../oidc/validation.js";
+import { listEffectiveUsers, resolveEffectiveUser, resolveEffectiveUserByUsername } from "../oidc/users.js";
+import { findClient, findDevice, parseScopes, validateRedirectUri, validateScopes } from "../oidc/validation.js";
 import { renderLoginPage, renderMfaPage } from "../views/login.js";
 import { emptyToUndefined, getTenantOr404, readBearerToken, readString, sendAuthorizeError, sendTokenError } from "./http.js";
 export function registerOidcRoutes(app, context) {
@@ -47,7 +48,7 @@ export function registerOidcRoutes(app, context) {
             return;
         }
         if (enableSessions === true) {
-            const sessionUser = getSessionUser(req, tenant, context.sessionSecret);
+            const sessionUser = getSessionUser(req, config, tenant, context.sessionSecret);
             if (sessionUser) {
                 context.logger.verbose(config, "authorize request satisfied from existing session", {
                     tenantId: tenant.tenantId,
@@ -74,7 +75,7 @@ export function registerOidcRoutes(app, context) {
             state: validation.request.state ?? "",
             nonce: validation.request.nonce ?? "",
             device_id: validation.request.deviceId ?? ""
-        }, readString(req.query.login_error)));
+        }, readString(req.query.login_error), listEffectiveUsers(config, tenant).map((entry) => entry.user)));
     });
     app.post("/:tenantId/login", (req, res) => {
         const config = context.getConfig();
@@ -96,8 +97,8 @@ export function registerOidcRoutes(app, context) {
             ? verifyMfaChallenge(readString(req.body.mfa_challenge), tenant.tenantId, context.sessionSecret)
             : undefined;
         const login = challenge
-            ? authenticateMfaChallengeUser(tenant, challenge)
-            : authenticateLogin(tenant, req, context.passwordStore);
+            ? authenticateMfaChallengeUser(config, tenant, challenge)
+            : authenticateLogin(config, tenant, req, context.passwordStore);
         if (!login.ok) {
             context.logger.warn("login rejected", { tenantId: tenant.tenantId, reason: login.description });
             if (tenant.secure) {
@@ -109,7 +110,7 @@ export function registerOidcRoutes(app, context) {
                     state: validation.request.state ?? "",
                     nonce: validation.request.nonce ?? "",
                     device_id: validation.request.deviceId ?? ""
-                }, login.description));
+                }, login.description, listEffectiveUsers(config, tenant).map((entry) => entry.user)));
                 return;
             }
             sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "access_denied", login.description);
@@ -117,7 +118,7 @@ export function registerOidcRoutes(app, context) {
         }
         const mfa = handleMfaLoginStep({
             tenant,
-            user: login.user,
+            user: login.user.user,
             validation,
             req,
             res,
@@ -131,7 +132,7 @@ export function registerOidcRoutes(app, context) {
         }
         completeLogin({
             tenant,
-            user: login.user,
+            user: login.user.user,
             validation,
             res,
             state: context.state,
@@ -493,11 +494,11 @@ function authorizeParamsFromRequest(client, request) {
         device_id: request.deviceId ?? ""
     };
 }
-function authenticateMfaChallengeUser(tenant, challenge) {
+function authenticateMfaChallengeUser(config, tenant, challenge) {
     if (!challenge) {
         return { ok: false, description: "Two-factor challenge is invalid or expired" };
     }
-    const user = findUser(tenant, challenge.userSub);
+    const user = resolveEffectiveUser(config, tenant, challenge.userSub);
     return user ? { ok: true, user } : { ok: false, description: "User no longer exists" };
 }
 function createMfaChallenge(challenge, sessionSecret) {
@@ -576,8 +577,8 @@ async function handleAuthorizationCodeGrant(args) {
         sendTokenError(args.res, "invalid_grant", "Authorization code is invalid or expired");
         return;
     }
-    const user = findUser(args.tenant, entry.userSub);
-    if (!user) {
+    const resolvedUser = resolveEffectiveUser(args.config, args.tenant, entry.userSub);
+    if (!resolvedUser) {
         args.logger.warn("authorization code grant rejected because user is missing", {
             tenantId: args.tenant.tenantId,
             clientId: args.client.clientId,
@@ -591,7 +592,7 @@ async function handleAuthorizationCodeGrant(args) {
         ? args.state.createRefreshToken({
             tenantId: args.tenant.tenantId,
             clientId: args.client.clientId,
-            userSub: user.sub,
+            userSub: resolvedUser.user.sub,
             scope: entry.scope,
             nonce: entry.nonce,
             deviceId: entry.deviceId,
@@ -604,7 +605,7 @@ async function handleAuthorizationCodeGrant(args) {
         state: args.state,
         tenant: args.tenant,
         client: args.client,
-        user,
+        user: resolvedUser.user,
         scope: entry.scope,
         nonce: entry.nonce,
         deviceId: entry.deviceId,
@@ -614,7 +615,7 @@ async function handleAuthorizationCodeGrant(args) {
     args.logger.info("authorization code grant completed", {
         tenantId: args.tenant.tenantId,
         clientId: args.client.clientId,
-        userSub: user.sub,
+        userSub: resolvedUser.user.sub,
         refreshTokenIssued: Boolean(refreshToken)
     });
 }
@@ -637,8 +638,8 @@ async function handleRefreshTokenGrant(args) {
         sendTokenError(args.res, "invalid_grant", "Refresh token is invalid or expired");
         return;
     }
-    const user = findUser(args.tenant, entry.userSub);
-    if (!user) {
+    const resolvedUser = resolveEffectiveUser(args.config, args.tenant, entry.userSub);
+    if (!resolvedUser) {
         args.logger.warn("refresh token grant rejected because user is missing", {
             tenantId: args.tenant.tenantId,
             clientId: args.client.clientId,
@@ -679,7 +680,7 @@ async function handleRefreshTokenGrant(args) {
         state: args.state,
         tenant: args.tenant,
         client: args.client,
-        user,
+        user: resolvedUser.user,
         scope: entry.scope,
         nonce: entry.nonce,
         deviceId: entry.deviceId,
@@ -689,7 +690,7 @@ async function handleRefreshTokenGrant(args) {
     args.logger.info("refresh token grant completed", {
         tenantId: args.tenant.tenantId,
         clientId: args.client.clientId,
-        userSub: user.sub,
+        userSub: resolvedUser.user.sub,
         refreshTokenRotated: args.config.rotateRefreshTokens
     });
 }
@@ -755,10 +756,10 @@ function parseBasicAuth(req) {
         clientSecret: decodeURIComponent(decoded.slice(separator + 1))
     };
 }
-function authenticateLogin(tenant, req, passwordStore) {
+function authenticateLogin(config, tenant, req, passwordStore) {
     if (!tenant.secure) {
         const userSub = readString(req.body.user_sub);
-        const user = userSub ? findUser(tenant, userSub) : undefined;
+        const user = userSub ? resolveEffectiveUser(config, tenant, userSub) : undefined;
         return user ? { ok: true, user } : { ok: false, description: "Unknown user" };
     }
     const username = readString(req.body.username)?.toLowerCase();
@@ -766,9 +767,8 @@ function authenticateLogin(tenant, req, passwordStore) {
     if (!username || !password) {
         return { ok: false, description: "Email and password are required" };
     }
-    const user = tenant.users.find((candidate) => candidate.email.toLowerCase() === username ||
-        candidate.preferred_username.toLowerCase() === username);
-    if (!user || !passwordStore.verify(tenant.tenantId, user.sub, password)) {
+    const user = resolveEffectiveUserByUsername(config, tenant, username);
+    if (!user || !passwordStore.verify(user.homeTenant.tenantId, user.user.sub, password)) {
         return { ok: false, description: "Invalid email or password" };
     }
     return { ok: true, user };

@@ -283,6 +283,7 @@ export function renderAdminPage(user) {
               <label>Display Name <input v-model.trim="selectedTenant.displayName"></label>
               <label>Session Lifetime Seconds <input v-model.number="selectedTenant.sessionLifetimeSeconds" type="number" min="1" step="1"></label>
               <label>Devices JSON <textarea v-model="selectedTenant.devicesText" spellcheck="false"></textarea></label>
+              <label>Shared Users JSON <textarea v-model="selectedTenant.sharedUsersText" spellcheck="false"></textarea></label>
             </div>
             <div class="checks">
               <label class="check"><input v-model="selectedTenant.secure" type="checkbox"> Secure login</label>
@@ -370,6 +371,7 @@ export function renderAdminPage(user) {
       clients: [],
       users: [],
       devices: [],
+      sharedUsers: [],
       secure: false,
       enableSessions: true,
       sessionLifetimeSeconds: 28800,
@@ -388,6 +390,7 @@ export function renderAdminPage(user) {
       const copy = clone(config);
       for (const tenant of copy.tenants) {
         tenant.devicesText = JSON.stringify(tenant.devices || [], null, 2);
+        tenant.sharedUsersText = JSON.stringify(tenant.sharedUsers || [], null, 2);
         tenant.twoFactorEnabled = Boolean(tenant.twoFactorEnabled || tenant.twoFactorMandatory);
         tenant.twoFactorMandatory = Boolean(tenant.twoFactorMandatory);
         for (const client of tenant.clients) {
@@ -406,9 +409,11 @@ export function renderAdminPage(user) {
       const copy = clone(config);
       for (const tenant of copy.tenants) {
         tenant.devices = JSON.parse(tenant.devicesText || '[]');
+        tenant.sharedUsers = JSON.parse(tenant.sharedUsersText || '[]');
         tenant.twoFactorEnabled = Boolean(tenant.twoFactorEnabled || tenant.twoFactorMandatory);
         tenant.twoFactorMandatory = Boolean(tenant.twoFactorMandatory);
         delete tenant.devicesText;
+        delete tenant.sharedUsersText;
         for (const client of tenant.clients) {
           client.redirectUris = splitLines(client.redirectUrisText);
           client.allowedScopes = splitTokens(client.allowedScopesText);

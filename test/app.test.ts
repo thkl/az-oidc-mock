@@ -39,6 +39,7 @@ const config: AppConfig = {
           enabled: true
         }
       ],
+      sharedUsers: [],
       secure: false,
       enableSessions: true,
       sessionLifetimeSeconds: 8 * 60 * 60,
@@ -67,6 +68,7 @@ const config: AppConfig = {
         }
       ],
       devices: [],
+      sharedUsers: [],
       secure: false,
       enableSessions: true,
       sessionLifetimeSeconds: 8 * 60 * 60,
@@ -613,6 +615,94 @@ describe("Azure OIDC mock", () => {
     }
   });
 
+  it("allows a shared account from another tenant to login and receive target-tenant tokens", async () => {
+    const sharedConfig: AppConfig = {
+      ...config,
+      tenants: [
+        config.tenants[0],
+        {
+          ...config.tenants[1],
+          sharedUsers: [{ tenantId: "common", userSub: "user-1" }]
+        }
+      ]
+    };
+    const app = createApp({ config: sharedConfig, keys, logger: silentLogger });
+
+    const loginPage = await request(app)
+      .get("/contoso/oauth2/v2.0/authorize")
+      .query(contosoAuthorizeQuery())
+      .expect(200);
+    expect(loginPage.text).toContain("Alice Example");
+
+    const login = await request(app)
+      .post("/contoso/login")
+      .type("form")
+      .send({ ...contosoAuthorizeQuery(), user_sub: "user-1" })
+      .expect(302);
+    const code = new URL(login.header.location).searchParams.get("code");
+
+    const token = await request(app)
+      .post("/contoso/oauth2/v2.0/token")
+      .type("form")
+      .send({
+        grant_type: "authorization_code",
+        client_id: "contoso-app",
+        code,
+        redirect_uri: "http://contoso.test/callback"
+      })
+      .expect(200);
+
+    const userinfo = await request(app)
+      .get("/contoso/oidc/userinfo")
+      .set("authorization", `Bearer ${token.body.access_token}`)
+      .expect(200);
+    expect(userinfo.body).toMatchObject({
+      sub: "user-1",
+      name: "Alice Example",
+      tid: "contoso"
+    });
+  });
+
+  it("authenticates secure shared accounts with the source tenant password", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-shared-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("source-secret")}\n`, "utf8");
+      const sharedConfig: AppConfig = {
+        ...config,
+        tenants: [
+          config.tenants[0],
+          {
+            ...config.tenants[1],
+            secure: true,
+            sharedUsers: [{ tenantId: "common", userSub: "user-1" }]
+          }
+        ]
+      };
+      const app = createApp({
+        config: sharedConfig,
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath)
+      });
+
+      await request(app)
+        .post("/contoso/login")
+        .type("form")
+        .send({ ...contosoAuthorizeQuery(), username: "alice@example.test", password: "wrong" })
+        .expect(401);
+
+      const login = await request(app)
+        .post("/contoso/login")
+        .type("form")
+        .send({ ...contosoAuthorizeQuery(), username: "alice@example.test", password: "source-secret" })
+        .expect(302);
+      expect(new URL(login.header.location).searchParams.get("code")).toBeTruthy();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("lets users skip optional 2FA enrollment", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-mfa-"));
     try {
@@ -1124,6 +1214,17 @@ function authorizeQuery() {
     client_id: "local-app",
     redirect_uri: "http://app.test/callback",
     scope: "openid profile email offline_access",
+    state: "state-1",
+    nonce: "nonce-1"
+  };
+}
+
+function contosoAuthorizeQuery() {
+  return {
+    response_type: "code",
+    client_id: "contoso-app",
+    redirect_uri: "http://contoso.test/callback",
+    scope: "openid profile",
     state: "state-1",
     nonce: "nonce-1"
   };

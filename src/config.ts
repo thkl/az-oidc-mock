@@ -11,6 +11,11 @@ const userSchema = z.object({
   claims: z.record(z.string(), z.unknown()).default({})
 });
 
+const sharedUserSchema = z.object({
+  tenantId: z.string().min(1),
+  userSub: z.string().min(1)
+});
+
 const deviceSchema = z.object({
   deviceId: z.string().min(1),
   displayName: z.string().min(1),
@@ -30,6 +35,7 @@ const tenantSchema = z.object({
   displayName: z.string().min(1),
   clients: z.array(clientSchema).min(1),
   users: z.array(userSchema).min(1),
+  sharedUsers: z.array(sharedUserSchema).default([]),
   devices: z.array(deviceSchema).default([]),
   secure: z.boolean().default(false),
   enableSessions: z.boolean().default(true),
@@ -124,6 +130,7 @@ function normalizeConfigForSave(config: AppConfig): AppConfig {
     tenants: config.tenants.map((tenant) => ({
       ...tenant,
       twoFactorEnabled: tenant.twoFactorEnabled || tenant.twoFactorMandatory,
+      sharedUsers: tenant.sharedUsers ?? [],
       clients: tenant.clients.map((client) => ({
         ...client,
         allowedScopes: client.allowedScopes.flatMap((scope) => scope.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean))
@@ -287,6 +294,18 @@ function validateConfigUniqueness(config: AppConfig): void {
         throw new Error(`Duplicate deviceId "${device.deviceId}" in tenant "${tenant.tenantId}"`);
       }
       deviceIds.add(device.deviceId);
+    }
+  }
+
+  for (const tenant of config.tenants) {
+    for (const sharedUser of tenant.sharedUsers) {
+      const homeTenant = config.tenants.find((candidate) => candidate.tenantId === sharedUser.tenantId);
+      if (!homeTenant) {
+        throw new Error(`Shared user tenant "${sharedUser.tenantId}" referenced by tenant "${tenant.tenantId}" does not exist`);
+      }
+      if (!homeTenant.users.some((user) => user.sub === sharedUser.userSub)) {
+        throw new Error(`Shared user "${sharedUser.userSub}" from tenant "${sharedUser.tenantId}" referenced by tenant "${tenant.tenantId}" does not exist`);
+      }
     }
   }
 }

@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
-import { findUser } from "./validation.js";
-export function getSessionUser(req, tenant, sessionSecret) {
+import { resolveEffectiveUser } from "./users.js";
+export function getSessionUser(req, config, tenant, sessionSecret) {
     const cookie = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
     const userSub = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
-    return userSub ? findUser(tenant, userSub) : undefined;
+    return userSub ? resolveEffectiveUser(config, tenant, userSub)?.user : undefined;
 }
 export function setSessionUser(res, tenant, userSub, sessionSecret) {
     const maxAge = tenant.sessionLifetimeSeconds * 1000;

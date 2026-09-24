@@ -1,13 +1,13 @@
 import type { Request, Response } from "express";
 import crypto from "node:crypto";
-import type { MockTenant, MockUser } from "../config.js";
+import type { AppConfig, MockTenant, MockUser } from "../config.js";
 import type { SigningKeys } from "./keys.js";
-import { findUser } from "./validation.js";
+import { resolveEffectiveUser } from "./users.js";
 
-export function getSessionUser(req: Request, tenant: MockTenant, sessionSecret: string): MockUser | undefined {
+export function getSessionUser(req: Request, config: AppConfig, tenant: MockTenant, sessionSecret: string): MockUser | undefined {
   const cookie = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
   const userSub = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
-  return userSub ? findUser(tenant, userSub) : undefined;
+  return userSub ? resolveEffectiveUser(config, tenant, userSub)?.user : undefined;
 }
 
 export function setSessionUser(res: Response, tenant: MockTenant, userSub: string, sessionSecret: string): void {

@@ -20,7 +20,7 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
-    const sessionUser = getSessionUser(req, setup.tenant, context.sessionSecret);
+    const sessionUser = getSessionUser(req, config, setup.tenant, context.sessionSecret);
     if (!sessionUser) {
       res.redirect(createAdminAuthorizeUrl(config).toString());
       return;
@@ -234,7 +234,7 @@ function getAdminRequestUser(
     return { ok: false, status: 503, error: "admin_not_configured", description: setup.description };
   }
 
-  const user = getSessionUser(req, setup.tenant, sessionSecret);
+  const user = getSessionUser(req, config, setup.tenant, sessionSecret);
   if (!user) {
     return { ok: false, status: 401, error: "login_required", description: "Sign in with the internal tenant first" };
   }

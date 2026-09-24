@@ -1,7 +1,7 @@
 /**
  * Renders the login page for an authorization request.
  */
-export function renderLoginPage(tenant, params, error) {
+export function renderLoginPage(tenant, params, error, users = tenant.users) {
     const hiddenFields = Object.entries(params)
         .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
         .join("\n");
@@ -16,7 +16,7 @@ export function renderLoginPage(tenant, params, error) {
         <input name="password" type="password" autocomplete="current-password" required>
       </label>
       <button class="primary" type="submit">Sign in</button>`
-        : tenant.users
+        : users
             .map((user) => `
         <button class="user" type="submit" name="user_sub" value="${escapeHtml(user.sub)}">
           <span>${escapeHtml(user.name)}</span>

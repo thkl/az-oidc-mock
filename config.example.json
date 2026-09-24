@@ -14,6 +14,7 @@
       "sessionLifetimeSeconds": 28800,
       "twoFactorEnabled": false,
       "twoFactorMandatory": false,
+      "sharedUsers": [],
       "clients": [
         {
           "clientId": "local-app",
@@ -55,6 +56,12 @@
       "sessionLifetimeSeconds": 28800,
       "twoFactorEnabled": false,
       "twoFactorMandatory": false,
+      "sharedUsers": [
+        {
+          "tenantId": "common",
+          "userSub": "00000000-0000-0000-0000-000000000001"
+        }
+      ],
       "clients": [
         {
           "clientId": "contoso-app",
@@ -82,6 +89,7 @@
       "sessionLifetimeSeconds": 28800,
       "twoFactorEnabled": false,
       "twoFactorMandatory": false,
+      "sharedUsers": [],
       "clients": [
         {
           "clientId": "internal-admin",

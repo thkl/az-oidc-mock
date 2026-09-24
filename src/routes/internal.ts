@@ -39,7 +39,7 @@ export function registerInternalRoutes(app: Express, context: RouteContext): voi
       return;
     }
 
-    const subject = resolveVerifiedTokenSubject(tenant, verification.claims);
+    const subject = resolveVerifiedTokenSubject(config, tenant, verification.claims);
     if (!subject.ok) {
       context.logger.warn("internal token verification rejected unknown claims", {
         tenantId: tenant.tenantId,

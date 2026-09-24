@@ -2,7 +2,8 @@ import type { JWTPayload } from "jose";
 import type { AppConfig, MockClient, MockDevice, MockTenant, MockUser } from "../config.js";
 import type { SigningKeys } from "./keys.js";
 import { verifyAccessToken } from "./tokens.js";
-import { findClient, findDevice, findUser } from "./validation.js";
+import { resolveEffectiveUser } from "./users.js";
+import { findClient, findDevice } from "./validation.js";
 
 export async function resolveActiveTokenSubject(input: {
   config: AppConfig;
@@ -17,18 +18,19 @@ export async function resolveActiveTokenSubject(input: {
   if (!verification.ok) {
     return verification;
   }
-  const subject = resolveVerifiedTokenSubject(input.tenant, verification.claims);
+  const subject = resolveVerifiedTokenSubject(input.config, input.tenant, verification.claims);
   return subject.ok ? subject : { ok: false, error: "invalid_token", description: subject.description };
 }
 
 export function resolveVerifiedTokenSubject(
+  config: AppConfig,
   tenant: MockTenant,
   claims: JWTPayload
 ):
   | { ok: true; client: MockClient; user: MockUser; device?: MockDevice }
   | { ok: false; description: string } {
   const client = findClient(tenant, String(claims.aud));
-  const user = findUser(tenant, String(claims.sub));
+  const user = resolveEffectiveUser(config, tenant, String(claims.sub))?.user;
   const device = typeof claims.deviceid === "string"
     ? findDevice(tenant, claims.deviceid)
     : undefined;

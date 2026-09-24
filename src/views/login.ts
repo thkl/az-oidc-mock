@@ -1,4 +1,4 @@
-import type { MockTenant } from "../config.js";
+import type { MockTenant, MockUser } from "../config.js";
 
 export type MfaLoginView =
   | {
@@ -27,7 +27,7 @@ export type MfaLoginView =
 /**
  * Renders the login page for an authorization request.
  */
-export function renderLoginPage(tenant: MockTenant, params: Record<string, string>, error?: string): string {
+export function renderLoginPage(tenant: MockTenant, params: Record<string, string>, error?: string, users = tenant.users): string {
   const hiddenFields = Object.entries(params)
     .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
     .join("\n");
@@ -43,7 +43,7 @@ export function renderLoginPage(tenant: MockTenant, params: Record<string, strin
         <input name="password" type="password" autocomplete="current-password" required>
       </label>
       <button class="primary" type="submit">Sign in</button>`
-    : tenant.users
+    : users
       .map(
         (user) => `
         <button class="user" type="submit" name="user_sub" value="${escapeHtml(user.sub)}">

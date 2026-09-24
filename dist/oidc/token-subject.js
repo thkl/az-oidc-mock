@@ -1,16 +1,17 @@
 import { verifyAccessToken } from "./tokens.js";
-import { findClient, findDevice, findUser } from "./validation.js";
+import { resolveEffectiveUser } from "./users.js";
+import { findClient, findDevice } from "./validation.js";
 export async function resolveActiveTokenSubject(input) {
     const verification = await verifyAccessToken(input);
     if (!verification.ok) {
         return verification;
     }
-    const subject = resolveVerifiedTokenSubject(input.tenant, verification.claims);
+    const subject = resolveVerifiedTokenSubject(input.config, input.tenant, verification.claims);
     return subject.ok ? subject : { ok: false, error: "invalid_token", description: subject.description };
 }
-export function resolveVerifiedTokenSubject(tenant, claims) {
+export function resolveVerifiedTokenSubject(config, tenant, claims) {
     const client = findClient(tenant, String(claims.aud));
-    const user = findUser(tenant, String(claims.sub));
+    const user = resolveEffectiveUser(config, tenant, String(claims.sub))?.user;
     const device = typeof claims.deviceid === "string"
         ? findDevice(tenant, claims.deviceid)
         : undefined;
