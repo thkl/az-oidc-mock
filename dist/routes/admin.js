@@ -170,6 +170,38 @@ export function registerAdminRoutes(app, context) {
         });
         res.json({ deleted, tenant_id: tenant.tenantId, user_sub: user.sub });
     });
+    app.delete("/internal/admin/api/passkeys", (req, res) => {
+        const config = context.getConfig();
+        const auth = getAdminRequestUser(config, req, context.sessionSecret);
+        if (!auth.ok) {
+            res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+            return;
+        }
+        if (!verifyAdminCsrfToken(req, auth.user, context.sessionSecret)) {
+            res.status(403).json({ error: "csrf_failed", error_description: "Admin CSRF token is missing or invalid" });
+            return;
+        }
+        const body = readObjectBody(req);
+        const tenantId = readString(body.tenant_id) ?? readString(body.tenantId);
+        const userSub = readString(body.user_sub) ?? readString(body.userSub);
+        const tenant = tenantId ? findTenant(config, tenantId) : undefined;
+        const user = tenant && userSub ? findUser(tenant, userSub) : undefined;
+        if (!tenant || !user) {
+            res.status(400).json({
+                error: "invalid_request",
+                error_description: "tenant_id and user_sub are required"
+            });
+            return;
+        }
+        const deleted = context.passkeyStore.remove(tenant.tenantId, user.sub);
+        context.logger.info("admin user passkeys reset", {
+            adminUserSub: auth.user.sub,
+            tenantId: tenant.tenantId,
+            userSub: user.sub,
+            deleted
+        });
+        res.json({ deleted, tenant_id: tenant.tenantId, user_sub: user.sub });
+    });
 }
 function redactConfigSecrets(config) {
     return {
@@ -272,6 +304,8 @@ function createInternalTenantExample(config) {
         sessionLifetimeSeconds: 28800,
         twoFactorEnabled: false,
         twoFactorMandatory: false,
+        passkeysEnabled: false,
+        passkeysMandatory: false,
         clients: [
             {
                 clientId: ADMIN_CLIENT_ID,

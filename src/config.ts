@@ -42,6 +42,8 @@ const tenantSchema = z.object({
   sessionLifetimeSeconds: z.number().int().positive().default(8 * 60 * 60),
   twoFactorEnabled: z.boolean().default(false),
   twoFactorMandatory: z.boolean().default(false),
+  passkeysEnabled: z.boolean().default(false),
+  passkeysMandatory: z.boolean().default(false),
 });
 
 const tlsSchema = z.object({
@@ -130,6 +132,7 @@ function normalizeConfigForSave(config: AppConfig): AppConfig {
     tenants: config.tenants.map((tenant) => ({
       ...tenant,
       twoFactorEnabled: tenant.twoFactorEnabled || tenant.twoFactorMandatory,
+      passkeysEnabled: tenant.passkeysEnabled || tenant.passkeysMandatory,
       sharedUsers: tenant.sharedUsers ?? [],
       clients: tenant.clients.map((client) => ({
         ...client,

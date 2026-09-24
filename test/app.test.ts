@@ -9,6 +9,7 @@ import { loadConfig, parseConfig, watchConfig, type AppConfig } from "../src/con
 import type { Logger } from "../src/logger.js";
 import { createSigningKeys, type SigningKeys } from "../src/oidc/keys.js";
 import { createTotpCode, MfaStore } from "../src/oidc/mfa.js";
+import { PasskeyStore } from "../src/oidc/passkeys.js";
 import { createPasswordHash, PasswordStore } from "../src/oidc/passwords.js";
 import { OidcState } from "../src/oidc/state.js";
 import { loadTlsOptions } from "../src/tls.js";
@@ -396,6 +397,35 @@ describe("Azure OIDC mock", () => {
     }
   });
 
+  it("resets user passkeys through the admin UI API", async () => {
+    const passkeyStore = new PasskeyStore();
+    passkeyStore.add({
+      tenantId: "common",
+      userSub: "user-1",
+      credentialId: "credential-1",
+      publicKeyCose: "dummy",
+      counter: 0
+    });
+    const app = createApp({
+      config: adminConfig(),
+      keys,
+      logger: silentLogger,
+      passkeyStore
+    });
+    const agent = request.agent(app);
+
+    await loginInternalAdmin(agent);
+    const csrfToken = await adminCsrfToken(agent);
+    const reset = await agent
+      .delete("/internal/admin/api/passkeys")
+      .set("x-csrf-token", csrfToken)
+      .send({ tenant_id: "common", user_sub: "user-1" })
+      .expect(200);
+
+    expect(reset.body).toEqual({ deleted: true, tenant_id: "common", user_sub: "user-1" });
+    expect(passkeyStore.isEnrolled("common", "user-1")).toBe(false);
+  });
+
   it("rejects admin UI mutations without the CSRF token", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-admin-"));
     try {
@@ -722,6 +752,79 @@ describe("Azure OIDC mock", () => {
         .expect(302);
 
       expect(login.header["set-cookie"]?.join("\n")).toContain("Secure");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("offers passkey login and optional passkey setup for secure tenants", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passkey-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      const app = createApp({
+        config: secureConfig({ passkeysEnabled: true }),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath),
+        sessionSecret: "passkey-test-secret"
+      });
+
+      const page = await request(app)
+        .get("/common/oauth2/v2.0/authorize")
+        .query(authorizeQuery())
+        .expect(200);
+      expect(page.text).toContain("id=\"passkey-login\"");
+
+      const setup = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(200);
+      expect(setup.text).toContain("Set Up Passkey");
+      expect(setup.text).toContain("Continue without passkey");
+
+      const challenge = extractScriptString(setup.text, "challenge");
+      const options = await request(app)
+        .post("/common/passkeys/register/options")
+        .send({ passkey_challenge: challenge })
+        .expect(200);
+      expect(options.body.publicKey.rp.id).toBe("127.0.0.1");
+      expect(options.body.publicKey.user.name).toBe("alice@example.test");
+      expect(options.body.registrationToken).toEqual(expect.any(String));
+
+      const continued = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), passkey_challenge: challenge, passkey_action: "continue" })
+        .expect(302);
+      expect(new URL(continued.header.location).searchParams.get("code")).toBeTruthy();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("requires passkey setup when passkeys are mandatory", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passkey-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      const app = createApp({
+        config: secureConfig({ passkeysMandatory: true }),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath),
+        sessionSecret: "passkey-test-secret"
+      });
+
+      const setup = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(200);
+
+      expect(setup.text).toContain("Set up a passkey to continue.");
+      expect(setup.text).not.toContain("Continue without passkey");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -1484,6 +1587,15 @@ function extractInputValue(html: string, name: string): string {
     throw new Error(`Input ${name} not found`);
   }
   return match[1].replaceAll("&quot;", "\"").replaceAll("&amp;", "&");
+}
+
+function extractScriptString(html: string, name: string): string {
+  const pattern = new RegExp(`const ${name} = "([^"]+)"`);
+  const match = pattern.exec(html);
+  if (!match) {
+    throw new Error(`Script string ${name} not found`);
+  }
+  return match[1];
 }
 
 function extractSecret(html: string): string {

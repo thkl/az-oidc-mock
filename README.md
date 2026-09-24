@@ -152,6 +152,8 @@ The admin console uses the mock itself for authentication. Configure a secure te
   "secure": true,
   "enableSessions": true,
   "sessionLifetimeSeconds": 28800,
+  "passkeysEnabled": false,
+  "passkeysMandatory": false,
   "clients": [
     {
       "clientId": "internal-admin",
@@ -279,6 +281,8 @@ Set `"secure": true` on a tenant to make its interactive login behave more like 
   "sessionLifetimeSeconds": 28800,
   "twoFactorEnabled": false,
   "twoFactorMandatory": false,
+  "passkeysEnabled": false,
+  "passkeysMandatory": false,
   "users": [
     {
       "sub": "00000000-0000-0000-0000-000000000001",
@@ -336,7 +340,22 @@ Set `twoFactorMandatory` to require setup before the login can finish. Mandatory
 
 Enrollments are stored in `mfa.json` next to the active config file, so they survive restarts when that config directory is persisted. The admin UI can reset a user's 2FA enrollment from the user editor.
 
-Passkeys are not implemented yet. They need a WebAuthn challenge/credential store and browser-origin handling, which is larger than the current form-based login flow.
+### Passkey Login
+
+Set `passkeysEnabled` on a secure tenant to offer browser passkey setup after a successful password login. After the user enrolls, the login page shows a `Use passkey` button that can complete the authorize request without entering the password.
+
+Set `passkeysMandatory` to require passkey setup before the login can finish. Mandatory mode also implies `passkeysEnabled` when the admin UI saves the config.
+
+```json
+{
+  "tenantId": "common",
+  "secure": true,
+  "passkeysEnabled": true,
+  "passkeysMandatory": false
+}
+```
+
+Passkey credentials are stored in `passkeys.json` next to the active config file, so they survive restarts when that config directory is persisted. The admin UI can reset a user's passkeys from the user editor. WebAuthn binds passkeys to the browser origin, so `baseUrl` must match the URL users open in the browser.
 
 Session cookies are signed. Set `OIDC_MOCK_SESSION_SECRET` to a strong shared value in Docker Swarm or any multi-replica deployment:
 

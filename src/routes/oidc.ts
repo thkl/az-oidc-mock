@@ -5,6 +5,7 @@ import { tenantIssuer } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { SigningKeys } from "../oidc/keys.js";
 import { createTotpSecret, createTotpUri, verifyTotpSecret } from "../oidc/mfa.js";
+import { createPasskeyChallenge, verifyPasskeyRegistration } from "../oidc/passkeys.js";
 import type { PasswordStore } from "../oidc/passwords.js";
 import { clearSessionUser, getSessionUser, setSessionUser } from "../oidc/session.js";
 import type { OidcState } from "../oidc/state.js";
@@ -18,11 +19,12 @@ import {
   validateRedirectUri,
   validateScopes
 } from "../oidc/validation.js";
-import { renderLoginPage, renderMfaPage } from "../views/login.js";
+import { renderLoginPage, renderMfaPage, renderPasskeyPage } from "../views/login.js";
 import {
   emptyToUndefined,
   getTenantOr404,
   readBearerToken,
+  readObjectBody,
   readString,
   sendAuthorizeError,
   sendTokenError
@@ -54,6 +56,14 @@ type MfaChallenge = {
   userSub: string;
   request: ValidatedAuthorizeRequest;
   setupSecret?: string;
+  expiresAt: number;
+};
+
+type PasskeyChallenge = {
+  tenantId: string;
+  userSub: string;
+  request: ValidatedAuthorizeRequest;
+  webauthnChallenge?: string;
   expiresAt: number;
 };
 
@@ -149,6 +159,27 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
+    const passkeyChallenge = readString(req.body.passkey_challenge)
+      ? verifyPasskeyChallenge(readString(req.body.passkey_challenge), tenant.tenantId, context.sessionSecret)
+      : undefined;
+    if (passkeyChallenge && readString(req.body.passkey_action) === "continue") {
+      const user = resolveEffectiveUser(config, tenant, passkeyChallenge.userSub);
+      if (user) {
+        completeLogin({
+          tenant,
+          user: user.user,
+          validation: { client: validation.client, request: passkeyChallenge.request },
+          req,
+          res,
+          state: context.state,
+          sessionSecret: context.sessionSecret,
+          logger: context.logger,
+          config
+        });
+        return;
+      }
+    }
+
     const challenge = readString(req.body.mfa_challenge)
       ? verifyMfaChallenge(readString(req.body.mfa_challenge), tenant.tenantId, context.sessionSecret)
       : undefined;
@@ -188,6 +219,20 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
+    if (shouldShowPasskeySetup(tenant, context.passkeyStore.isEnrolled(login.user.homeTenant.tenantId, login.user.user.sub))) {
+      const passkeyChallengeValue = createPasskeyLoginChallenge({
+        tenantId: tenant.tenantId,
+        userSub: login.user.user.sub,
+        request: validation.request
+      }, context.sessionSecret);
+      res.type("html").send(renderPasskeyPage(tenant, {
+        challenge: passkeyChallengeValue,
+        params: authorizeParamsFromRequest(validation.client, validation.request),
+        mandatory: tenant.passkeysMandatory
+      }));
+      return;
+    }
+
     completeLogin({
       tenant,
       user: login.user.user,
@@ -199,6 +244,158 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       logger: context.logger,
       config
     });
+  });
+
+  app.post("/:tenantId/passkeys/register/options", (req, res) => {
+    const config = context.getConfig();
+    const tenant = getTenantOr404(config, req, res);
+    if (!tenant) return;
+    const body = readObjectBody(req);
+    const passkeyChallenge = verifyPasskeyChallenge(readString(body.passkey_challenge), tenant.tenantId, context.sessionSecret);
+    const user = passkeyChallenge ? resolveEffectiveUser(config, tenant, passkeyChallenge.userSub) : undefined;
+    if (!(tenant.passkeysEnabled || tenant.passkeysMandatory) || !passkeyChallenge || !user) {
+      res.status(400).json({ error: "invalid_request", error_description: "Passkey setup challenge is invalid" });
+      return;
+    }
+
+    const webauthnChallenge = createPasskeyChallenge();
+    const registrationToken = createPasskeyLoginChallenge({ ...passkeyChallenge, webauthnChallenge }, context.sessionSecret);
+    res.json({
+      registrationToken,
+      publicKey: {
+        challenge: webauthnChallenge,
+        rp: { name: tenant.displayName, id: passkeyRpId(config) },
+        user: {
+          id: Buffer.from(`${user.homeTenant.tenantId}:${user.user.sub}`, "utf8").toString("base64url"),
+          name: user.user.preferred_username,
+          displayName: user.user.name
+        },
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+        authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
+        timeout: 60000,
+        attestation: "none",
+        excludeCredentials: context.passkeyStore.list(user.homeTenant.tenantId, user.user.sub).map((record) => ({
+          type: "public-key",
+          id: record.credentialId
+        }))
+      }
+    });
+  });
+
+  app.post("/:tenantId/passkeys/register", (req, res) => {
+    const config = context.getConfig();
+    const tenant = getTenantOr404(config, req, res);
+    if (!tenant) return;
+    const body = readObjectBody(req);
+    const token = verifyPasskeyChallenge(readString(body.registration_token), tenant.tenantId, context.sessionSecret);
+    const user = token ? resolveEffectiveUser(config, tenant, token.userSub) : undefined;
+    const response = body.response && typeof body.response === "object" && !Array.isArray(body.response)
+      ? body.response as Record<string, unknown>
+      : {};
+    if (!(tenant.passkeysEnabled || tenant.passkeysMandatory) || !token?.webauthnChallenge || !user) {
+      res.status(400).json({ error: "invalid_request", error_description: "Passkey registration token is invalid" });
+      return;
+    }
+
+    const registration = verifyPasskeyRegistration({
+      clientDataJSON: readString(response.clientDataJSON) ?? "",
+      attestationObject: readString(response.attestationObject) ?? "",
+      expectedChallenge: token.webauthnChallenge,
+      expectedOrigin: passkeyOrigin(config),
+      rpId: passkeyRpId(config)
+    });
+    if (!registration.ok) {
+      res.status(400).json({ error: "invalid_passkey", error_description: registration.description });
+      return;
+    }
+
+    context.passkeyStore.add({
+      tenantId: user.homeTenant.tenantId,
+      userSub: user.user.sub,
+      credentialId: registration.credentialId,
+      publicKeyCose: registration.publicKeyCose,
+      counter: registration.counter
+    });
+    const client = findClient(tenant, token.request.clientId);
+    if (!client) {
+      res.status(400).json({ error: "invalid_request", error_description: "Passkey client is no longer available" });
+      return;
+    }
+    const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub);
+    res.json({ redirect });
+  });
+
+  app.post("/:tenantId/passkeys/authenticate/options", (req, res) => {
+    const config = context.getConfig();
+    const tenant = getTenantOr404(config, req, res);
+    if (!tenant) return;
+    const body = readObjectBody(req);
+    const validation = validateAuthorizeRequest(tenant, body as AuthorizeQuery);
+    const username = readString(body.username)?.toLowerCase();
+    const user = username ? resolveEffectiveUserByUsername(config, tenant, username) : undefined;
+    const credentials = user ? context.passkeyStore.list(user.homeTenant.tenantId, user.user.sub) : [];
+    if (!(tenant.passkeysEnabled || tenant.passkeysMandatory) || !validation.ok || !user || credentials.length === 0) {
+      res.status(400).json({ error: "invalid_request", error_description: "No passkey is available for this login" });
+      return;
+    }
+
+    const webauthnChallenge = createPasskeyChallenge();
+    const authenticationToken = createPasskeyLoginChallenge({
+      tenantId: tenant.tenantId,
+      userSub: user.user.sub,
+      request: validation.request,
+      webauthnChallenge
+    }, context.sessionSecret);
+    res.json({
+      authenticationToken,
+      publicKey: {
+        challenge: webauthnChallenge,
+        rpId: passkeyRpId(config),
+        allowCredentials: credentials.map((record) => ({ type: "public-key", id: record.credentialId })),
+        userVerification: "preferred",
+        timeout: 60000
+      }
+    });
+  });
+
+  app.post("/:tenantId/passkeys/authenticate", (req, res) => {
+    const config = context.getConfig();
+    const tenant = getTenantOr404(config, req, res);
+    if (!tenant) return;
+    const body = readObjectBody(req);
+    const response = body.response && typeof body.response === "object" && !Array.isArray(body.response)
+      ? body.response as Record<string, unknown>
+      : {};
+    const token = verifyPasskeyChallenge(readString(body.authentication_token), tenant.tenantId, context.sessionSecret);
+    const user = token ? resolveEffectiveUser(config, tenant, token.userSub) : undefined;
+    if (!(tenant.passkeysEnabled || tenant.passkeysMandatory) || !token?.webauthnChallenge || !user) {
+      res.status(400).json({ error: "invalid_request", error_description: "Passkey authentication token is invalid" });
+      return;
+    }
+
+    const ok = context.passkeyStore.verify({
+      tenantId: user.homeTenant.tenantId,
+      userSub: user.user.sub,
+      credentialId: readString(body.rawId) ?? readString(body.id) ?? "",
+      clientDataJSON: readString(response.clientDataJSON) ?? "",
+      authenticatorData: readString(response.authenticatorData) ?? "",
+      signature: readString(response.signature) ?? "",
+      expectedChallenge: token.webauthnChallenge,
+      expectedOrigin: passkeyOrigin(config),
+      rpId: passkeyRpId(config)
+    });
+    if (!ok) {
+      res.status(401).json({ error: "invalid_passkey", error_description: "Passkey assertion is invalid" });
+      return;
+    }
+
+    const client = findClient(tenant, token.request.clientId);
+    if (!client) {
+      res.status(400).json({ error: "invalid_request", error_description: "Passkey client is no longer available" });
+      return;
+    }
+    const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub);
+    res.json({ redirect });
   });
 
   app.post("/:tenantId/oauth2/v2.0/token", async (req, res) => {
@@ -431,6 +628,16 @@ function redirectWithCode(
   request: { redirectUri: string; scope: string[]; state?: string; nonce?: string; deviceId?: string },
   userSub: string
 ): void {
+  res.redirect(createCodeRedirectUrl(oidcState, tenantId, client, request, userSub));
+}
+
+function createCodeRedirectUrl(
+  oidcState: OidcState,
+  tenantId: string,
+  client: MockClient,
+  request: { redirectUri: string; scope: string[]; state?: string; nonce?: string; deviceId?: string },
+  userSub: string
+): string {
   const code = oidcState.createCode(
     {
       tenantId,
@@ -448,7 +655,7 @@ function redirectWithCode(
   if (request.state) {
     redirectUrl.searchParams.set("state", request.state);
   }
-  res.redirect(redirectUrl.toString());
+  return redirectUrl.toString();
 }
 
 function handleMfaLoginStep(args: {
@@ -682,6 +889,54 @@ function verifyMfaChallenge(value: string | undefined, tenantId: string, session
   } catch {
     return undefined;
   }
+}
+
+function shouldShowPasskeySetup(tenant: MockTenant, enrolled: boolean): boolean {
+  return (tenant.passkeysEnabled || tenant.passkeysMandatory) && !enrolled;
+}
+
+function createPasskeyLoginChallenge(challenge: Omit<PasskeyChallenge, "expiresAt">, sessionSecret: string): string {
+  const payload = Buffer.from(JSON.stringify({
+    ...challenge,
+    expiresAt: Date.now() + 5 * 60 * 1000
+  }), "utf8").toString("base64url");
+  const signature = crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
+  return `v1.${payload}.${signature}`;
+}
+
+function verifyPasskeyChallenge(value: string | undefined, tenantId: string, sessionSecret: string): PasskeyChallenge | undefined {
+  if (!value) return undefined;
+  const [version, payload, signature] = value.split(".");
+  if (version !== "v1" || !payload || !signature) return undefined;
+
+  const expected = crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
+  if (!constantTimeEqual(signature, expected)) return undefined;
+
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as PasskeyChallenge;
+    if (
+      decoded.tenantId !== tenantId ||
+      typeof decoded.userSub !== "string" ||
+      typeof decoded.expiresAt !== "number" ||
+      decoded.expiresAt <= Date.now() ||
+      (decoded.webauthnChallenge !== undefined && typeof decoded.webauthnChallenge !== "string") ||
+      !isValidatedAuthorizeRequest(decoded.request)
+    ) {
+      return undefined;
+    }
+    return decoded;
+  } catch {
+    return undefined;
+  }
+}
+
+function passkeyOrigin(config: AppConfig): string {
+  const url = new URL(config.baseUrl);
+  return url.origin;
+}
+
+function passkeyRpId(config: AppConfig): string {
+  return new URL(config.baseUrl).hostname;
 }
 
 function isValidatedAuthorizeRequest(value: unknown): value is ValidatedAuthorizeRequest {

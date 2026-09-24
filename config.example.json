@@ -14,6 +14,8 @@
       "sessionLifetimeSeconds": 28800,
       "twoFactorEnabled": false,
       "twoFactorMandatory": false,
+      "passkeysEnabled": false,
+      "passkeysMandatory": false,
       "sharedUsers": [],
       "clients": [
         {
@@ -56,6 +58,8 @@
       "sessionLifetimeSeconds": 28800,
       "twoFactorEnabled": false,
       "twoFactorMandatory": false,
+      "passkeysEnabled": false,
+      "passkeysMandatory": false,
       "sharedUsers": [
         {
           "tenantId": "common",
@@ -81,6 +85,8 @@
       "sessionLifetimeSeconds": 28800,
       "twoFactorEnabled": false,
       "twoFactorMandatory": false,
+      "passkeysEnabled": false,
+      "passkeysMandatory": false,
       "sharedUsers": [],
       "clients": [
         {

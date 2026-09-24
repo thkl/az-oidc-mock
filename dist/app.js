@@ -1,6 +1,7 @@
 import express from "express";
 import { createLogger } from "./logger.js";
 import { MfaStore } from "./oidc/mfa.js";
+import { PasskeyStore } from "./oidc/passkeys.js";
 import { PasswordStore } from "./oidc/passwords.js";
 import { createDefaultSessionSecret } from "./oidc/session.js";
 import { OidcState } from "./oidc/state.js";
@@ -10,7 +11,7 @@ import { registerOidcRoutes } from "./routes/oidc.js";
 /**
  * Creates the Express application and wires all tenant-aware OIDC routes.
  */
-export function createApp({ config, keys, logger = createLogger(), state = new OidcState(), passwordStore = new PasswordStore(), mfaStore = new MfaStore(), adminToken, sessionSecret = createDefaultSessionSecret(), configPath, onConfigSaved }) {
+export function createApp({ config, keys, logger = createLogger(), state = new OidcState(), passwordStore = new PasswordStore(), passkeyStore = new PasskeyStore(), mfaStore = new MfaStore(), adminToken, sessionSecret = createDefaultSessionSecret(), configPath, onConfigSaved }) {
     const app = express();
     const getConfig = typeof config === "function" ? config : () => config;
     const routeContext = {
@@ -19,6 +20,7 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
         logger,
         state,
         passwordStore,
+        passkeyStore,
         mfaStore,
         adminToken,
         sessionSecret,

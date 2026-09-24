@@ -395,7 +395,9 @@ export function renderAdminPage(user) {
       enableSessions: true,
       sessionLifetimeSeconds: 28800,
       twoFactorEnabled: false,
-      twoFactorMandatory: false
+      twoFactorMandatory: false,
+      passkeysEnabled: false,
+      passkeysMandatory: false
     });
     const splitLines = (value) => String(value || '').split(/\\r?\\n|,/).map((item) => item.trim()).filter(Boolean);
     const splitTokens = (value) => String(value || '').split(/[\\s,]+/).map((item) => item.trim()).filter(Boolean);
@@ -419,6 +421,8 @@ export function renderAdminPage(user) {
         tenant.sharedUsers = tenant.sharedUsers || [];
         tenant.twoFactorEnabled = Boolean(tenant.twoFactorEnabled || tenant.twoFactorMandatory);
         tenant.twoFactorMandatory = Boolean(tenant.twoFactorMandatory);
+        tenant.passkeysEnabled = Boolean(tenant.passkeysEnabled || tenant.passkeysMandatory);
+        tenant.passkeysMandatory = Boolean(tenant.passkeysMandatory);
         for (const client of tenant.clients) {
           client.redirectUrisText = (client.redirectUris || []).join('\\n');
           client.allowedScopesText = (client.allowedScopes || []).join(' ');
@@ -438,6 +442,8 @@ export function renderAdminPage(user) {
         tenant.sharedUsers = tenant.sharedUsers || [];
         tenant.twoFactorEnabled = Boolean(tenant.twoFactorEnabled || tenant.twoFactorMandatory);
         tenant.twoFactorMandatory = Boolean(tenant.twoFactorMandatory);
+        tenant.passkeysEnabled = Boolean(tenant.passkeysEnabled || tenant.passkeysMandatory);
+        tenant.passkeysMandatory = Boolean(tenant.passkeysMandatory);
         delete tenant.devicesText;
         for (const client of tenant.clients) {
           client.redirectUris = splitLines(client.redirectUrisText);
@@ -534,6 +540,8 @@ export function renderAdminPage(user) {
             <label class="check"><input data-field="tenant.enableSessions" type="checkbox" \${tenant.enableSessions ? 'checked' : ''}> Login sessions</label>
             <label class="check"><input data-field="tenant.twoFactorEnabled" type="checkbox" \${tenant.twoFactorEnabled ? 'checked' : ''}> 2FA enabled</label>
             <label class="check"><input data-field="tenant.twoFactorMandatory" type="checkbox" \${tenant.twoFactorMandatory ? 'checked' : ''}> 2FA mandatory</label>
+            <label class="check"><input data-field="tenant.passkeysEnabled" type="checkbox" \${tenant.passkeysEnabled ? 'checked' : ''}> Passkeys enabled</label>
+            <label class="check"><input data-field="tenant.passkeysMandatory" type="checkbox" \${tenant.passkeysMandatory ? 'checked' : ''}> Passkeys mandatory</label>
           </div>
           \${renderSharedAccounts(tenant)}
         </div>
@@ -571,7 +579,7 @@ export function renderAdminPage(user) {
       <label>Roles <textarea data-field="user.rolesText" spellcheck="false">\${escapeText(user.rolesText || '')}</textarea></label>
       <label>Claims JSON <textarea data-field="user.claimsText" spellcheck="false">\${escapeText(user.claimsText || '{}')}</textarea></label>
       <div class="secret-row"><label>New Password <input data-field="user.newPassword" autocomplete="new-password" type="password" value="\${escapeText(user.newPassword || '')}"></label><button type="button" data-action="generate-user-password">Generate</button><button type="button" data-action="set-user-password" \${user.newPassword ? '' : 'disabled'}>Set</button></div>
-      <div class="actions"><button type="button" data-action="reset-user-mfa">Reset 2FA</button></div>
+      <div class="actions"><button type="button" data-action="reset-user-mfa">Reset 2FA</button><button type="button" data-action="reset-user-passkeys">Reset Passkeys</button></div>
       \${renderShareTargets(tenant, user)}
       <div class="actions"><button class="danger" type="button" data-action="remove-user">Delete User</button></div>
     </div>\`;
@@ -601,6 +609,8 @@ export function renderAdminPage(user) {
       if (field === 'tenant.enableSessions') tenant.enableSessions = value;
       if (field === 'tenant.twoFactorEnabled') tenant.twoFactorEnabled = value;
       if (field === 'tenant.twoFactorMandatory') { tenant.twoFactorMandatory = value; tenant.twoFactorEnabled = tenant.twoFactorEnabled || value; }
+      if (field === 'tenant.passkeysEnabled') tenant.passkeysEnabled = value;
+      if (field === 'tenant.passkeysMandatory') { tenant.passkeysMandatory = value; tenant.passkeysEnabled = tenant.passkeysEnabled || value; }
       if (field === 'client.clientId') client.clientId = value.trim();
       if (field === 'client.clientSecret') client.clientSecret = value;
       if (field === 'client.enabled') client.enabled = value;
@@ -634,6 +644,7 @@ export function renderAdminPage(user) {
       if (action === 'generate-user-password') { selectedUser().newPassword = 'az_mock-pw_' + randomBase64Url(18); return render(); }
       if (action === 'set-user-password') return setUserPassword();
       if (action === 'reset-user-mfa') return resetUserMfa();
+      if (action === 'reset-user-passkeys') return resetUserPasskeys();
       if (action === 'remove-user') return removeUser();
       if (action === 'user-share') return setUserShare(shareTargets()[Number(event.currentTarget.dataset.index)], event.currentTarget.checked);
       if (action === 'selected-share') return setSelectedShare(event.currentTarget.checked);
@@ -736,6 +747,19 @@ export function renderAdminPage(user) {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error_description || 'Unable to reset 2FA');
         state.status = { type: 'ok', message: payload.deleted ? '2FA enrollment reset.' : 'No 2FA enrollment existed.' };
+      } catch (error) {
+        state.status = { type: 'error', message: error.message };
+      }
+      render();
+    };
+    const resetUserPasskeys = async () => {
+      const tenant = selectedTenant(); const user = selectedUser();
+      if (!tenant || !user || !confirm('Reset all passkeys for this user?')) return;
+      try {
+        const response = await fetch('/internal/admin/api/passkeys', { method: 'DELETE', headers: adminJsonHeaders(), body: JSON.stringify({ tenant_id: tenant.tenantId, user_sub: user.sub }) });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error_description || 'Unable to reset passkeys');
+        state.status = { type: 'ok', message: payload.deleted ? 'Passkeys reset.' : 'No passkeys existed.' };
       } catch (error) {
         state.status = { type: 'error', message: error.message };
       }
