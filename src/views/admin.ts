@@ -208,6 +208,7 @@ export function renderAdminPage(user: MockUser): string {
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .triple { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
     .split { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 10px; }
+    .secret-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: end; }
     .row-list { display: grid; gap: 6px; align-content: start; }
     .row-button { min-height: 0; display: grid; gap: 3px; text-align: left; padding: 8px; }
     .row-button strong { font-weight: 440; }
@@ -307,7 +308,10 @@ export function renderAdminPage(user: MockUser): string {
             <div v-if="selectedClient" class="panel-body">
               <div class="grid">
                 <label>Client ID <input v-model.trim="selectedClient.clientId"></label>
-                <label>Client Secret <input v-model="selectedClient.clientSecret" autocomplete="new-password"></label>
+                <div class="secret-row">
+                  <label>Client Secret <input v-model="selectedClient.clientSecret" autocomplete="new-password"></label>
+                  <button type="button" @click="generateClientSecret">Generate</button>
+                </div>
               </div>
               <div class="checks">
                 <label class="check"><input v-model="selectedClient.enabled" type="checkbox"> Enabled</label>
@@ -365,6 +369,11 @@ export function renderAdminPage(user: MockUser): string {
     const splitLines = (value) => String(value || '').split(/\\r?\\n|,/).map((item) => item.trim()).filter(Boolean);
     const splitTokens = (value) => String(value || '').split(/[\\s,]+/).map((item) => item.trim()).filter(Boolean);
     const clone = (value) => JSON.parse(JSON.stringify(value));
+    const randomBase64Url = (bytes) => {
+      const data = new Uint8Array(bytes);
+      crypto.getRandomValues(data);
+      return btoa(String.fromCharCode(...data)).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+    };
     const decorate = (config) => {
       const copy = clone(config);
       for (const tenant of copy.tenants) {
@@ -506,6 +515,10 @@ export function renderAdminPage(user: MockUser): string {
         addClient() {
           this.selectedTenant.clients.push({ clientId: 'new-client', clientSecret: '', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
           this.selectedClientIndex = this.selectedTenant.clients.length - 1;
+        },
+        generateClientSecret() {
+          if (!this.selectedClient) return;
+          this.selectedClient.clientSecret = 'az_mock-sk_' + randomBase64Url(24);
         },
         removeClient() {
           if (!confirm('Delete this client?')) return;

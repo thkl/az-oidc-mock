@@ -204,6 +204,8 @@ describe("Azure OIDC mock", () => {
     const page = await agent.get("/internal/admin").expect(200);
     expect(page.text).toContain("https://unpkg.com/vue@3");
     expect(page.text).toContain("OIDC Admin");
+    expect(page.text).toContain("Generate");
+    expect(page.text).toContain("az_mock-sk_");
 
     const api = await agent.get("/internal/admin/api/config").expect(200);
     expect(api.body.user.sub).toBe("admin-1");
