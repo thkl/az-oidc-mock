@@ -4,15 +4,19 @@ import { createApp } from "./app.js";
 import { loadConfig, watchConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { createSigningKeys } from "./oidc/keys.js";
+import { PasswordStore } from "./oidc/passwords.js";
 import { OidcState } from "./oidc/state.js";
 import { loadTlsOptions } from "./tls.js";
 const configPath = process.env.CONFIG_PATH ?? "config.json";
 const refreshTokenStorePath = path.join(path.dirname(path.resolve(configPath)), "refresh-tokens.json");
+const passwdPath = path.join(path.dirname(path.resolve(configPath)), "passwd");
+const adminToken = process.env.OIDC_MOCK_ADMIN_TOKEN;
 let config = loadConfig(configPath);
 const keys = await createSigningKeys();
 const logger = createLogger();
 const state = new OidcState(refreshTokenStorePath);
-const app = createApp({ config: () => config, keys, logger, state });
+const passwordStore = new PasswordStore(passwdPath);
+const app = createApp({ config: () => config, keys, logger, state, passwordStore, adminToken });
 watchConfig(configPath, (reloaded) => {
     config = reloaded;
     logger.info("config reloaded", {
@@ -37,6 +41,7 @@ server.listen(port, () => {
         protocol: config.tls ? "https" : "http",
         tenantCount: config.tenants.length,
         refreshTokenStorePath,
+        passwdPath,
         verbose: config.verbose
     });
 });

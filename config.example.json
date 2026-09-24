@@ -9,6 +9,8 @@
     {
       "tenantId": "common",
       "displayName": "Default Tenant",
+      "secure": false,
+      "enableSessions": true,
       "clients": [
         {
           "clientId": "local-app",
@@ -45,6 +47,8 @@
     {
       "tenantId": "contoso",
       "displayName": "Contoso",
+      "secure": false,
+      "enableSessions": true,
       "clients": [
         {
           "clientId": "contoso-app",

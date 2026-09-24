@@ -1,8 +1,10 @@
 import express, { type Request, type Response } from "express";
-import type { AppConfig, MockClient, MockTenant } from "./config.js";
+import crypto from "node:crypto";
+import type { AppConfig, MockClient, MockTenant, MockUser } from "./config.js";
 import { tenantIssuer } from "./config.js";
 import { createLogger, type Logger } from "./logger.js";
 import type { SigningKeys } from "./oidc/keys.js";
+import { PasswordStore } from "./oidc/passwords.js";
 import { OidcState } from "./oidc/state.js";
 import { createAccessToken, createIdToken, verifyAccessToken } from "./oidc/tokens.js";
 import {
@@ -21,6 +23,8 @@ type AppDeps = {
   keys: SigningKeys;
   logger?: Logger;
   state?: OidcState;
+  passwordStore?: PasswordStore;
+  adminToken?: string;
 };
 
 type AuthorizeQuery = {
@@ -37,7 +41,14 @@ type AuthorizeQuery = {
 /**
  * Creates the Express application and wires all tenant-aware OIDC routes.
  */
-export function createApp({ config, keys, logger = createLogger(), state = new OidcState() }: AppDeps): express.Express {
+export function createApp({
+  config,
+  keys,
+  logger = createLogger(),
+  state = new OidcState(),
+  passwordStore = new PasswordStore(),
+  adminToken
+}: AppDeps): express.Express {
   const app = express();
   const getConfig = typeof config === "function" ? config : () => config;
   app.disable("x-powered-by");
@@ -101,14 +112,14 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
       return;
     }
     if (enableSessions === true) {
-      const sessionUser = getSessionUser(req, tenant.tenantId);
+      const sessionUser = getSessionUser(req, tenant);
       if (sessionUser) {
         logger.verbose(config, "authorize request satisfied from existing session", {
           tenantId: tenant.tenantId,
           clientId: validation.client.clientId,
-          userSub: sessionUser
+          userSub: sessionUser.sub
         });
-        redirectWithCode(res, state, tenant.tenantId, validation.client, validation.request, sessionUser);
+        redirectWithCode(res, state, tenant.tenantId, validation.client, validation.request, sessionUser.sub);
         return;
       }
     }
@@ -130,7 +141,7 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
         state: validation.request.state ?? "",
         nonce: validation.request.nonce ?? "",
         device_id: validation.request.deviceId ?? ""
-      })
+      }, readString(req.query.login_error))
     );
   });
 
@@ -151,20 +162,34 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
       return;
     }
 
-    const userSub = readString(req.body.user_sub);
-    if (!userSub || !findUser(tenant, userSub)) {
-      logger.warn("login rejected for unknown user", { tenantId: tenant.tenantId, userSub });
-      sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "access_denied", "Unknown user");
+    const login = authenticateLogin(tenant, req, passwordStore);
+    if (!login.ok) {
+      logger.warn("login rejected", { tenantId: tenant.tenantId, reason: login.description });
+      if (tenant.secure) {
+        res.type("html").status(401).send(renderLoginPage(tenant, {
+          client_id: validation.client.clientId,
+          redirect_uri: validation.request.redirectUri,
+          response_type: "code",
+          scope: validation.request.scope.join(" "),
+          state: validation.request.state ?? "",
+          nonce: validation.request.nonce ?? "",
+          device_id: validation.request.deviceId ?? ""
+        }, login.description));
+        return;
+      }
+      sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "access_denied", login.description);
       return;
     }
 
-    setSessionUser(res, tenant.tenantId, userSub);
+    if (tenant.enableSessions) {
+      setSessionUser(res, tenant.tenantId, login.user.sub);
+    }
     logger.info("mock user selected", {
       tenantId: tenant.tenantId,
       clientId: validation.client.clientId,
-      userSub
+      userSub: login.user.sub
     });
-    redirectWithCode(res, state, tenant.tenantId, validation.client, validation.request, userSub);
+    redirectWithCode(res, state, tenant.tenantId, validation.client, validation.request, login.user.sub);
   });
 
   app.post("/:tenantId/oauth2/v2.0/token", async (req, res) => {
@@ -269,6 +294,55 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
       ...(device ? { device_id: device.deviceId } : {}),
       claims: verification.claims
     });
+  });
+
+  app.post("/:tenantId/internal/passwords", (req, res) => {
+    const config = getConfig();
+    const tenant = getTenantOr404(config, req, res);
+    if (!tenant) return;
+    if (!authorizeAdminRequest(req, adminToken)) {
+      res.status(401).json({ error: "unauthorized", error_description: "Admin token is required" });
+      return;
+    }
+
+    const body = readObjectBody(req);
+    const user = resolvePasswordUser(tenant, body);
+    const password = readString(body.password);
+    if (!user || !password) {
+      res.status(400).json({
+        error: "invalid_request",
+        error_description: "user_sub or username and password are required"
+      });
+      return;
+    }
+
+    passwordStore.setPassword(tenant.tenantId, user.sub, password);
+    logger.info("secure tenant password updated", { tenantId: tenant.tenantId, userSub: user.sub });
+    res.json({ updated: true, tenant_id: tenant.tenantId, user_sub: user.sub });
+  });
+
+  app.delete("/:tenantId/internal/passwords", (req, res) => {
+    const config = getConfig();
+    const tenant = getTenantOr404(config, req, res);
+    if (!tenant) return;
+    if (!authorizeAdminRequest(req, adminToken)) {
+      res.status(401).json({ error: "unauthorized", error_description: "Admin token is required" });
+      return;
+    }
+
+    const body = readObjectBody(req);
+    const user = resolvePasswordUser(tenant, body);
+    if (!user) {
+      res.status(400).json({
+        error: "invalid_request",
+        error_description: "user_sub or username is required"
+      });
+      return;
+    }
+
+    const deleted = passwordStore.deletePassword(tenant.tenantId, user.sub);
+    logger.info("secure tenant password removed", { tenantId: tenant.tenantId, userSub: user.sub, deleted });
+    res.json({ deleted, tenant_id: tenant.tenantId, user_sub: user.sub });
   });
 
   app.get("/:tenantId/oauth2/v2.0/logout", (req, res) => {
@@ -802,11 +876,71 @@ function isInactiveRefreshTokenDevice(
   return !device || !device.enabled;
 }
 
+function authenticateLogin(
+  tenant: MockTenant,
+  req: Request,
+  passwordStore: PasswordStore
+): { ok: true; user: MockUser } | { ok: false; description: string } {
+  if (!tenant.secure) {
+    const userSub = readString(req.body.user_sub);
+    const user = userSub ? findUser(tenant, userSub) : undefined;
+    return user ? { ok: true, user } : { ok: false, description: "Unknown user" };
+  }
+
+  const username = readString(req.body.username)?.toLowerCase();
+  const password = readString(req.body.password);
+  if (!username || !password) {
+    return { ok: false, description: "Email and password are required" };
+  }
+
+  const user = tenant.users.find((candidate) =>
+    candidate.email.toLowerCase() === username ||
+    candidate.preferred_username.toLowerCase() === username
+  );
+  if (!user || !passwordStore.verify(tenant.tenantId, user.sub, password)) {
+    return { ok: false, description: "Invalid email or password" };
+  }
+
+  return { ok: true, user };
+}
+
+function resolvePasswordUser(tenant: MockTenant, body: Record<string, unknown>): MockUser | undefined {
+  const userSub = readString(body.user_sub) ?? readString(body.userSub);
+  if (userSub) {
+    return findUser(tenant, userSub);
+  }
+
+  const username = readString(body.username)?.toLowerCase();
+  if (!username) {
+    return undefined;
+  }
+  return tenant.users.find((candidate) =>
+    candidate.email.toLowerCase() === username ||
+    candidate.preferred_username.toLowerCase() === username
+  );
+}
+
+function authorizeAdminRequest(req: Request, adminToken: string | undefined): boolean {
+  if (!adminToken) {
+    return false;
+  }
+
+  const suppliedToken = readBearerToken(req) ?? readString(req.header("x-admin-token"));
+  if (!suppliedToken) {
+    return false;
+  }
+
+  const expected = Buffer.from(adminToken);
+  const actual = Buffer.from(suppliedToken);
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
 /**
  * Reads the selected user from the tenant-specific mock session cookie.
  */
-function getSessionUser(req: Request, tenantId: string): string | undefined {
-  return parseCookies(req.header("cookie"))[`az_oidc_mock_${tenantId}`];
+function getSessionUser(req: Request, tenant: MockTenant): MockUser | undefined {
+  const userSub = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
+  return userSub ? findUser(tenant, userSub) : undefined;
 }
 
 /**

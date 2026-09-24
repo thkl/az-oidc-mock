@@ -84,6 +84,10 @@ TLS settings are read at startup. Restart the server after changing certificate 
 
 Refresh tokens are persisted next to the active config file in `refresh-tokens.json`. If `CONFIG_PATH=/config/config.json`, the refresh-token cache is `/config/refresh-tokens.json`, which makes it suitable for Docker bind mounts or shared volumes. Expired refresh tokens are pruned when the cache is loaded or updated.
 
+Secure tenant passwords are read from a `passwd` file next to the active config file. If `CONFIG_PATH=/config/config.json`, the password file is `/config/passwd`.
+
+Set `OIDC_MOCK_ADMIN_TOKEN` to enable internal password-management endpoints for containerized deployments where editing `passwd` directly is inconvenient.
+
 Verbose logging can be enabled in `config.json`:
 
 ```json
@@ -139,6 +143,8 @@ http://localhost:3000/common/oauth2/v2.0/authorize?response_type=code&client_id=
 
 The mock login screen shows users from the selected tenant. Choosing one redirects to the configured callback with `code` and `state`.
 
+If the tenant has `"secure": true`, the login screen shows email and password fields instead of the user picker. Users still come from the tenant config, but passwords are verified from the `passwd` file.
+
 Pass `device_id=machine-1` on the authorize request to bind the login to a configured tenant device. If a tenant has devices and no `device_id` is passed, the first enabled device is used.
 
 Exchange the code:
@@ -181,6 +187,89 @@ If `rotateRefreshTokens` is `true`, the old refresh token is invalidated and a n
 Refresh tokens are stored in `refresh-tokens.json` next to the active config file, so renewal continues to work after restarting the mock as long as that config directory is persisted.
 
 Refresh-token renewal also checks the device that was used for the original login. If that device is later removed from config or set to `"enabled": false`, renewal fails with `invalid_grant`.
+
+## Secure Tenant Login
+
+Set `"secure": true` on a tenant to make its interactive login behave more like a real SSO login. The page no longer lists configured users. Instead, the user enters their email or `preferred_username` and password.
+
+```json
+{
+  "tenantId": "common",
+  "displayName": "Default Tenant",
+  "secure": true,
+  "enableSessions": true,
+  "users": [
+    {
+      "sub": "00000000-0000-0000-0000-000000000001",
+      "name": "Alice Example",
+      "email": "alice@example.test",
+      "preferred_username": "alice@example.test",
+      "roles": ["Admin"]
+    }
+  ]
+}
+```
+
+Passwords are stored separately in `passwd` next to `config.json`. Each non-comment line is:
+
+```text
+tenantId:userSub:pbkdf2-sha256$iterations$salt$hash
+```
+
+Example:
+
+```text
+common:00000000-0000-0000-0000-000000000001:pbkdf2-sha256$310000$SALT$HASH
+```
+
+For local file-based setup, generate a compatible hash after building the project:
+
+```bash
+node -e 'import("./dist/oidc/passwords.js").then(({createPasswordHash}) => console.log(createPasswordHash(process.argv[1])))' 'change-me'
+```
+
+Then append the full record to the `passwd` file:
+
+```text
+common:00000000-0000-0000-0000-000000000001:PASTE_HASH_HERE
+```
+
+When `"enableSessions": true`, a successful login stores a tenant-scoped HTTP-only cookie so the next authorize request can proceed without entering the password again. `GET /{tenantId}/oauth2/v2.0/logout` clears that cookie. Set `"enableSessions": false` to require the password for every interactive login.
+
+For Docker Swarm or other deployments where the config directory is mounted into the service, set an admin token:
+
+```bash
+OIDC_MOCK_ADMIN_TOKEN='change-this-admin-token'
+```
+
+Then set or rotate a password through the running service:
+
+```bash
+curl -sS -X POST http://localhost:3000/common/internal/passwords \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer change-this-admin-token' \
+  -d '{"username":"alice@example.test","password":"new-password"}'
+```
+
+You can identify the user by `username` using either `email` or `preferred_username`, or by `user_sub`:
+
+```bash
+curl -sS -X POST http://localhost:3000/common/internal/passwords \
+  -H 'content-type: application/json' \
+  -H 'x-admin-token: change-this-admin-token' \
+  -d '{"user_sub":"00000000-0000-0000-0000-000000000001","password":"new-password"}'
+```
+
+Remove a password entry:
+
+```bash
+curl -sS -X DELETE http://localhost:3000/common/internal/passwords \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer change-this-admin-token' \
+  -d '{"username":"alice@example.test"}'
+```
+
+The password-management endpoints return `401` unless `OIDC_MOCK_ADMIN_TOKEN` is configured and the request passes the matching bearer token or `x-admin-token` header.
 
 ## Device-Bound Sessions
 

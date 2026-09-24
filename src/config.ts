@@ -31,6 +31,7 @@ const tenantSchema = z.object({
   clients: z.array(clientSchema).min(1),
   users: z.array(userSchema).min(1),
   devices: z.array(deviceSchema).default([]),
+  secure: z.boolean().default(false),
   enableSessions: z.boolean().default(true),
 });
 

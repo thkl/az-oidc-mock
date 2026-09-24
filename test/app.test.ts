@@ -7,6 +7,7 @@ import { createApp } from "../src/app.js";
 import { loadConfig, watchConfig, type AppConfig } from "../src/config.js";
 import type { Logger } from "../src/logger.js";
 import { createSigningKeys, type SigningKeys } from "../src/oidc/keys.js";
+import { createPasswordHash, PasswordStore } from "../src/oidc/passwords.js";
 import { OidcState } from "../src/oidc/state.js";
 import { loadTlsOptions } from "../src/tls.js";
 
@@ -203,6 +204,165 @@ describe("Azure OIDC mock", () => {
     expect(token.body.refresh_token).toBeTruthy();
     expect(token.body.refresh_token_expires_in).toBeGreaterThan(0);
     expect(token.body.refresh_token_expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it("uses email and password login for secure tenants and reuses the session cookie", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passwd-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("correct horse battery staple")}\n`, "utf8");
+      const app = createApp({
+        config: secureConfig(),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath)
+      });
+      const agent = request.agent(app);
+
+      const loginPage = await agent
+        .get("/common/oauth2/v2.0/authorize")
+        .query(authorizeQuery())
+        .expect(200);
+      expect(loginPage.text).not.toContain("Alice Example");
+      expect(loginPage.text).toContain('name="username"');
+      expect(loginPage.text).toContain('name="password"');
+
+      const failedLogin = await agent
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "wrong" })
+        .expect(401);
+      expect(failedLogin.text).toContain("Invalid email or password");
+
+      const login = await agent
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "correct horse battery staple" })
+        .expect(302);
+      expect(login.header["set-cookie"]?.join("\n")).toContain("az_oidc_mock_common=");
+
+      const silentLogin = await agent
+        .get("/common/oauth2/v2.0/authorize")
+        .query({ ...authorizeQuery(), state: "state-2" })
+        .expect(302);
+      const callback = new URL(silentLogin.header.location);
+      expect(callback.searchParams.get("code")).toBeTruthy();
+      expect(callback.searchParams.get("state")).toBe("state-2");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("clears secure login sessions on logout", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passwd-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      const app = createApp({
+        config: secureConfig(),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath)
+      });
+      const agent = request.agent(app);
+
+      await agent
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(302);
+
+      await agent.get("/common/oauth2/v2.0/logout").expect(204);
+
+      const loginPage = await agent
+        .get("/common/oauth2/v2.0/authorize")
+        .query(authorizeQuery())
+        .expect(200);
+      expect(loginPage.text).toContain('name="password"');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not store secure login sessions when tenant sessions are disabled", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passwd-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      const app = createApp({
+        config: secureConfig({ enableSessions: false }),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath)
+      });
+      const agent = request.agent(app);
+
+      const login = await agent
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(302);
+      expect(login.header["set-cookie"]).toBeUndefined();
+
+      const loginPage = await agent
+        .get("/common/oauth2/v2.0/authorize")
+        .query(authorizeQuery())
+        .expect(200);
+      expect(loginPage.text).toContain('name="password"');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets an authorized internal caller set and remove secure tenant passwords", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passwd-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      const app = createApp({
+        config: secureConfig(),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath),
+        adminToken: "admin-secret"
+      });
+
+      await request(app)
+        .post("/common/internal/passwords")
+        .send({ username: "alice@example.test", password: "new-secret" })
+        .expect(401);
+
+      const update = await request(app)
+        .post("/common/internal/passwords")
+        .set("authorization", "Bearer admin-secret")
+        .send({ username: "alice@example.test", password: "new-secret" })
+        .expect(200);
+      expect(update.body).toMatchObject({ updated: true, tenant_id: "common", user_sub: "user-1" });
+
+      const contents = await fs.readFile(passwdPath, "utf8");
+      expect(contents).toContain("common:user-1:pbkdf2-sha256$");
+      expect(contents).not.toContain("new-secret");
+
+      await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "new-secret" })
+        .expect(302);
+
+      const deletion = await request(app)
+        .delete("/common/internal/passwords")
+        .set("x-admin-token", "admin-secret")
+        .send({ user_sub: "user-1" })
+        .expect(200);
+      expect(deletion.body).toMatchObject({ deleted: true, tenant_id: "common", user_sub: "user-1" });
+
+      await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "new-secret" })
+        .expect(401);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("verifies an issued access token through the internal endpoint", async () => {
@@ -563,6 +723,21 @@ function disableCommonDevice(): AppConfig {
             enabled: false
           }
         ]
+      },
+      config.tenants[1]
+    ]
+  };
+}
+
+function secureConfig(overrides: Partial<AppConfig["tenants"][number]> = {}): AppConfig {
+  return {
+    ...config,
+    tenants: [
+      {
+        ...config.tenants[0],
+        secure: true,
+        enableSessions: true,
+        ...overrides
       },
       config.tenants[1]
     ]
