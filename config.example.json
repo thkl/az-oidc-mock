@@ -11,6 +11,7 @@
       "displayName": "Default Tenant",
       "secure": false,
       "enableSessions": true,
+      "sessionLifetimeSeconds": 28800,
       "clients": [
         {
           "clientId": "local-app",
@@ -49,6 +50,7 @@
       "displayName": "Contoso",
       "secure": false,
       "enableSessions": true,
+      "sessionLifetimeSeconds": 28800,
       "clients": [
         {
           "clientId": "contoso-app",

@@ -184,7 +184,7 @@ export function createApp({
     }
 
     if (tenant.enableSessions) {
-      setSessionUser(res, tenant.tenantId, login.user.sub, sessionSecret);
+      setSessionUser(res, tenant, login.user.sub, sessionSecret);
     }
     logger.info("mock user selected", {
       tenantId: tenant.tenantId,
@@ -947,12 +947,12 @@ function getSessionUser(req: Request, tenant: MockTenant, sessionSecret: string)
 /**
  * Stores the selected user in a tenant-specific mock session cookie.
  */
-function setSessionUser(res: Response, tenantId: string, userSub: string, sessionSecret: string): void {
-  const maxAge = 8 * 60 * 60 * 1000;
-  res.cookie(`az_oidc_mock_${tenantId}`, createSessionCookie(tenantId, userSub, Date.now() + maxAge, sessionSecret), {
+function setSessionUser(res: Response, tenant: MockTenant, userSub: string, sessionSecret: string): void {
+  const maxAge = tenant.sessionLifetimeSeconds * 1000;
+  res.cookie(`az_oidc_mock_${tenant.tenantId}`, createSessionCookie(tenant.tenantId, userSub, Date.now() + maxAge, sessionSecret), {
     httpOnly: true,
     sameSite: "lax",
-    path: `/${tenantId}`,
+    path: `/${tenant.tenantId}`,
     maxAge
   });
 }

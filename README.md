@@ -198,6 +198,7 @@ Set `"secure": true` on a tenant to make its interactive login behave more like 
   "displayName": "Default Tenant",
   "secure": true,
   "enableSessions": true,
+  "sessionLifetimeSeconds": 28800,
   "users": [
     {
       "sub": "00000000-0000-0000-0000-000000000001",
@@ -235,6 +236,8 @@ common:00000000-0000-0000-0000-000000000001:PASTE_HASH_HERE
 ```
 
 When `"enableSessions": true`, a successful login stores a tenant-scoped HTTP-only cookie so the next authorize request can proceed without entering the password again. `GET /{tenantId}/oauth2/v2.0/logout` clears that cookie. Set `"enableSessions": false` to require the password for every interactive login.
+
+Use `sessionLifetimeSeconds` on the tenant to control how long the login-session cookie is valid. The default is `28800` seconds, which is 8 hours.
 
 Session cookies are signed. Set `OIDC_MOCK_SESSION_SECRET` to a strong shared value in Docker Swarm or any multi-replica deployment:
 

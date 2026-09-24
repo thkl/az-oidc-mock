@@ -38,6 +38,9 @@ const config: AppConfig = {
           enabled: true
         }
       ],
+      secure: false,
+      enableSessions: true,
+      sessionLifetimeSeconds: 8 * 60 * 60,
       users: [
         {
           sub: "user-1",
@@ -61,6 +64,9 @@ const config: AppConfig = {
         }
       ],
       devices: [],
+      secure: false,
+      enableSessions: true,
+      sessionLifetimeSeconds: 8 * 60 * 60,
       users: [
         {
           sub: "contoso-user-1",
@@ -133,6 +139,9 @@ describe("Azure OIDC mock", () => {
             }
           ],
           devices: [],
+          secure: false,
+          enableSessions: true,
+          sessionLifetimeSeconds: 8 * 60 * 60,
           users: [
             {
               sub: "new-user",
@@ -357,6 +366,30 @@ describe("Azure OIDC mock", () => {
         .query(authorizeQuery())
         .expect(200);
       expect(loginPage.text).toContain('name="password"');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the tenant sessionLifetimeSeconds for the login cookie", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passwd-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      const app = createApp({
+        config: secureConfig({ sessionLifetimeSeconds: 60 }),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath)
+      });
+
+      const login = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(302);
+
+      expect(login.header["set-cookie"]?.join("\n")).toContain("Max-Age=60");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -785,6 +818,7 @@ function secureConfig(overrides: Partial<AppConfig["tenants"][number]> = {}): Ap
         ...config.tenants[0],
         secure: true,
         enableSessions: true,
+        sessionLifetimeSeconds: 8 * 60 * 60,
         ...overrides
       },
       config.tenants[1]

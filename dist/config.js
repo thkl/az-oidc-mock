@@ -29,6 +29,7 @@ const tenantSchema = z.object({
     devices: z.array(deviceSchema).default([]),
     secure: z.boolean().default(false),
     enableSessions: z.boolean().default(true),
+    sessionLifetimeSeconds: z.number().int().positive().default(8 * 60 * 60),
 });
 const tlsSchema = z.object({
     keyPath: z.string().min(1).optional(),
