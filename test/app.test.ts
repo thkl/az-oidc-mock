@@ -4,7 +4,7 @@ import path from "node:path";
 import request from "supertest";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { loadConfig, watchConfig, type AppConfig } from "../src/config.js";
+import { loadConfig, parseConfig, watchConfig, type AppConfig } from "../src/config.js";
 import type { Logger } from "../src/logger.js";
 import { createSigningKeys, type SigningKeys } from "../src/oidc/keys.js";
 import { createTotpCode, MfaStore } from "../src/oidc/mfa.js";
@@ -661,6 +661,33 @@ describe("Azure OIDC mock", () => {
       name: "Alice Example",
       tid: "contoso"
     });
+  });
+
+  it("allows a target tenant with only shared users and no local users", async () => {
+    const sharedConfig = parseConfig({
+      ...config,
+      tenants: [
+        config.tenants[0],
+        {
+          ...config.tenants[1],
+          users: [],
+          sharedUsers: [{ tenantId: "common", userSub: "user-1" }]
+        }
+      ]
+    });
+    const app = createApp({ config: sharedConfig, keys, logger: silentLogger });
+
+    const loginPage = await request(app)
+      .get("/contoso/oauth2/v2.0/authorize")
+      .query(contosoAuthorizeQuery())
+      .expect(200);
+    expect(loginPage.text).toContain("Alice Example");
+
+    await request(app)
+      .post("/contoso/login")
+      .type("form")
+      .send({ ...contosoAuthorizeQuery(), user_sub: "user-1" })
+      .expect(302);
   });
 
   it("authenticates secure shared accounts with the source tenant password", async () => {

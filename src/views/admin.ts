@@ -217,6 +217,8 @@ export function renderAdminPage(user: MockUser): string {
     .checks { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
     .check { display: inline-flex; gap: 7px; align-items: center; color: var(--text); font-size: 12px; font-weight: 360; }
     .check input { width: 16px; min-height: 16px; }
+    .share-box { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); padding: 9px; }
+    .share-box strong { font-size: 12px; font-weight: 480; }
     .status { border-radius: 5px; padding: 7px 8px; font-size: 11px; border: 1px solid var(--line); color: var(--muted); background: var(--surface-2); }
     .status.ok { border-color: rgba(22, 101, 52, .26); color: #166534; background: rgba(220, 252, 231, .68); }
     :root[data-theme="dark"] .status.ok { color: #bbf7d0; background: rgba(20, 83, 45, .42); }
@@ -285,13 +287,25 @@ export function renderAdminPage(user: MockUser): string {
               <label>Display Name <input v-model.trim="selectedTenant.displayName"></label>
               <label>Session Lifetime Seconds <input v-model.number="selectedTenant.sessionLifetimeSeconds" type="number" min="1" step="1"></label>
               <label>Devices JSON <textarea v-model="selectedTenant.devicesText" spellcheck="false"></textarea></label>
-              <label>Shared Users JSON <textarea v-model="selectedTenant.sharedUsersText" spellcheck="false"></textarea></label>
             </div>
             <div class="checks">
               <label class="check"><input v-model="selectedTenant.secure" type="checkbox"> Secure login</label>
               <label class="check"><input v-model="selectedTenant.enableSessions" type="checkbox"> Login sessions</label>
               <label class="check"><input v-model="selectedTenant.twoFactorEnabled" type="checkbox"> 2FA enabled</label>
               <label class="check"><input v-model="selectedTenant.twoFactorMandatory" type="checkbox" @change="selectedTenant.twoFactorEnabled = selectedTenant.twoFactorEnabled || selectedTenant.twoFactorMandatory"> 2FA mandatory</label>
+            </div>
+            <div v-if="shareUserOptions.length" class="share-box">
+              <strong>Shared Accounts</strong>
+              <label>Source User
+                <select v-model="selectedShareUserKey">
+                  <option value="">Select a user</option>
+                  <option v-for="option in shareUserOptions" :key="option.key" :value="option.key">{{ option.label }}</option>
+                </select>
+              </label>
+              <label v-if="selectedShareUserKey" class="check">
+                <input type="checkbox" :checked="isSelectedShareEnabled()" @change="setSelectedShare($event.target.checked)">
+                Share selected user with this tenant
+              </label>
             </div>
           </div>
         </section>
@@ -356,6 +370,13 @@ export function renderAdminPage(user: MockUser): string {
               <div class="actions">
                 <button type="button" @click="resetUserMfa">Reset 2FA</button>
               </div>
+              <div v-if="shareTargets.length" class="share-box">
+                <strong>Share This User With</strong>
+                <label v-for="tenant in shareTargets" :key="tenant.tenantId" class="check">
+                  <input type="checkbox" :checked="isUserSharedWith(tenant)" @change="setUserShare(tenant, $event.target.checked)">
+                  {{ tenant.displayName || tenant.tenantId }}
+                </label>
+              </div>
               <div class="actions"><button class="danger" type="button" @click="removeUser">Delete User</button></div>
             </div>
             <div v-else class="empty">Select or add a user.</div>
@@ -392,7 +413,7 @@ export function renderAdminPage(user: MockUser): string {
       const copy = clone(config);
       for (const tenant of copy.tenants) {
         tenant.devicesText = JSON.stringify(tenant.devices || [], null, 2);
-        tenant.sharedUsersText = JSON.stringify(tenant.sharedUsers || [], null, 2);
+        tenant.sharedUsers = tenant.sharedUsers || [];
         tenant.twoFactorEnabled = Boolean(tenant.twoFactorEnabled || tenant.twoFactorMandatory);
         tenant.twoFactorMandatory = Boolean(tenant.twoFactorMandatory);
         for (const client of tenant.clients) {
@@ -411,11 +432,10 @@ export function renderAdminPage(user: MockUser): string {
       const copy = clone(config);
       for (const tenant of copy.tenants) {
         tenant.devices = JSON.parse(tenant.devicesText || '[]');
-        tenant.sharedUsers = JSON.parse(tenant.sharedUsersText || '[]');
+        tenant.sharedUsers = tenant.sharedUsers || [];
         tenant.twoFactorEnabled = Boolean(tenant.twoFactorEnabled || tenant.twoFactorMandatory);
         tenant.twoFactorMandatory = Boolean(tenant.twoFactorMandatory);
         delete tenant.devicesText;
-        delete tenant.sharedUsersText;
         for (const client of tenant.clients) {
           client.redirectUris = splitLines(client.redirectUrisText);
           client.allowedScopes = splitTokens(client.allowedScopesText);
@@ -443,6 +463,7 @@ export function renderAdminPage(user: MockUser): string {
           selectedTenantId: '',
           selectedClientIndex: 0,
           selectedUserIndex: 0,
+          selectedShareUserKey: '',
           themeMode: localStorage.getItem('az_oidc_admin_theme') || 'system',
           status: { type: '', message: '' }
         };
@@ -451,6 +472,18 @@ export function renderAdminPage(user: MockUser): string {
         selectedTenant() { return this.editable.tenants.find((tenant) => tenant.tenantId === this.selectedTenantId) || this.editable.tenants[0]; },
         selectedClient() { return this.selectedTenant?.clients[this.selectedClientIndex]; },
         selectedUser() { return this.selectedTenant?.users[this.selectedUserIndex]; },
+        shareTargets() { return this.selectedTenant && this.selectedUser ? this.editable.tenants.filter((tenant) => tenant !== this.selectedTenant) : []; },
+        shareUserOptions() {
+          if (!this.selectedTenant) return [];
+          return this.editable.tenants
+            .filter((tenant) => tenant !== this.selectedTenant)
+            .flatMap((tenant) => tenant.users.map((user) => ({
+              key: tenant.tenantId + ':' + user.sub,
+              tenantId: tenant.tenantId,
+              userSub: user.sub,
+              label: (user.name || user.preferred_username || user.sub) + ' · ' + (tenant.displayName || tenant.tenantId)
+            })));
+        },
         totalClients() { return this.editable.tenants.reduce((sum, tenant) => sum + tenant.clients.length, 0); },
         totalUsers() { return this.editable.tenants.reduce((sum, tenant) => sum + tenant.users.length, 0); }
       },
@@ -486,6 +519,7 @@ export function renderAdminPage(user: MockUser): string {
             this.selectedTenantId = this.editable.tenants[0]?.tenantId || '';
             this.selectedClientIndex = 0;
             this.selectedUserIndex = 0;
+            this.selectedShareUserKey = '';
           } catch (error) {
             this.status = { type: 'error', message: error.message };
           } finally {
@@ -515,6 +549,7 @@ export function renderAdminPage(user: MockUser): string {
           this.selectedTenantId = tenantId;
           this.selectedClientIndex = 0;
           this.selectedUserIndex = 0;
+          this.selectedShareUserKey = '';
         },
         addTenant() {
           const tenant = decorate({ tenants: [blankTenant()] }).tenants[0];
@@ -586,6 +621,37 @@ export function renderAdminPage(user: MockUser): string {
             this.status = { type: 'ok', message: payload.deleted ? '2FA enrollment reset.' : 'No 2FA enrollment existed.' };
           } catch (error) {
             this.status = { type: 'error', message: error.message };
+          }
+        },
+        isUserSharedWith(targetTenant) {
+          if (!this.selectedTenant || !this.selectedUser) return false;
+          return (targetTenant.sharedUsers || []).some((entry) => entry.tenantId === this.selectedTenant.tenantId && entry.userSub === this.selectedUser.sub);
+        },
+        setUserShare(targetTenant, checked) {
+          if (!this.selectedTenant || !this.selectedUser) return;
+          targetTenant.sharedUsers = targetTenant.sharedUsers || [];
+          targetTenant.sharedUsers = targetTenant.sharedUsers.filter((entry) => !(entry.tenantId === this.selectedTenant.tenantId && entry.userSub === this.selectedUser.sub));
+          if (checked) {
+            targetTenant.sharedUsers.push({ tenantId: this.selectedTenant.tenantId, userSub: this.selectedUser.sub });
+          }
+        },
+        selectedShareReference() {
+          const [tenantId, ...userSubParts] = String(this.selectedShareUserKey || '').split(':');
+          const userSub = userSubParts.join(':');
+          return tenantId && userSub ? { tenantId, userSub } : undefined;
+        },
+        isSelectedShareEnabled() {
+          const reference = this.selectedShareReference();
+          if (!this.selectedTenant || !reference) return false;
+          return (this.selectedTenant.sharedUsers || []).some((entry) => entry.tenantId === reference.tenantId && entry.userSub === reference.userSub);
+        },
+        setSelectedShare(checked) {
+          const reference = this.selectedShareReference();
+          if (!this.selectedTenant || !reference) return;
+          this.selectedTenant.sharedUsers = this.selectedTenant.sharedUsers || [];
+          this.selectedTenant.sharedUsers = this.selectedTenant.sharedUsers.filter((entry) => !(entry.tenantId === reference.tenantId && entry.userSub === reference.userSub));
+          if (checked) {
+            this.selectedTenant.sharedUsers.push(reference);
           }
         },
         removeClient() {

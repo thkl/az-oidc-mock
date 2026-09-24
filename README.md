@@ -247,6 +247,7 @@ Use `sharedUsers` on a tenant when an account from one tenant should also be acc
 {
   "tenantId": "tenant-b",
   "displayName": "Tenant B",
+  "users": [],
   "sharedUsers": [
     {
       "tenantId": "tenant-a",
@@ -256,9 +257,13 @@ Use `sharedUsers` on a tenant when an account from one tenant should also be acc
 }
 ```
 
+The target tenant may have zero local users when it has shared users.
+
 The user profile and password remain owned by the source tenant. If `tenant-b` is secure, logging in as the shared account checks the password stored under `tenant-a:userSub` in `passwd`.
 
 Tokens are still issued for the target tenant. In the example above, the issued token has the `tenant-b` issuer/audience context, while user claims come from the source account.
+
+In the admin UI, select the source user and use the `Share This User With` checkboxes to choose target tenants. The UI writes the `sharedUsers` entries for you.
 
 ## Secure Tenant Login
 

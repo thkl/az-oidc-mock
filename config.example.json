@@ -71,15 +71,7 @@
         }
       ],
       "devices": [],
-      "users": [
-        {
-          "sub": "10000000-0000-0000-0000-000000000001",
-          "name": "Casey Contoso",
-          "email": "casey@contoso.test",
-          "preferred_username": "casey@contoso.test",
-          "roles": ["User"]
-        }
-      ]
+      "users": []
     },
     {
       "tenantId": "internal",

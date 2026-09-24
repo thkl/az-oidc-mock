@@ -29,7 +29,7 @@ const tenantSchema = z.object({
     tenantId: z.string().min(1),
     displayName: z.string().min(1),
     clients: z.array(clientSchema).min(1),
-    users: z.array(userSchema).min(1),
+    users: z.array(userSchema).default([]),
     sharedUsers: z.array(sharedUserSchema).default([]),
     devices: z.array(deviceSchema).default([]),
     secure: z.boolean().default(false),
@@ -256,7 +256,7 @@ function validateConfigUniqueness(config) {
         }
     }
     for (const tenant of config.tenants) {
-        for (const sharedUser of tenant.sharedUsers) {
+        for (const sharedUser of tenant.sharedUsers ?? []) {
             const homeTenant = config.tenants.find((candidate) => candidate.tenantId === sharedUser.tenantId);
             if (!homeTenant) {
                 throw new Error(`Shared user tenant "${sharedUser.tenantId}" referenced by tenant "${tenant.tenantId}" does not exist`);
