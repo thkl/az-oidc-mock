@@ -8,6 +8,9 @@ export class OidcState {
     refreshTokenStorePath;
     authorizationCodes = new Map();
     refreshTokens = new Map();
+    /**
+     * Creates state storage and hydrates persisted refresh tokens when configured.
+     */
     constructor(refreshTokenStorePath) {
         this.refreshTokenStorePath = refreshTokenStorePath;
         this.loadRefreshTokens();
@@ -64,6 +67,9 @@ export class OidcState {
         this.refreshTokens.delete(token);
         this.saveRefreshTokens();
     }
+    /**
+     * Loads persisted refresh tokens and drops expired or malformed entries.
+     */
     loadRefreshTokens() {
         if (!this.refreshTokenStorePath || !fs.existsSync(this.refreshTokenStorePath)) {
             return;
@@ -73,6 +79,7 @@ export class OidcState {
         if (parsed.version !== 1 || !Array.isArray(parsed.refreshTokens)) {
             throw new Error(`Unsupported refresh token store format: ${this.refreshTokenStorePath}`);
         }
+        // Only valid, non-expired tokens are hydrated into memory.
         const now = Date.now();
         for (const token of parsed.refreshTokens) {
             if (isRefreshToken(token) && token.expiresAt >= now) {
@@ -81,10 +88,14 @@ export class OidcState {
         }
         this.saveRefreshTokens();
     }
+    /**
+     * Persists refresh tokens after pruning expired records.
+     */
     saveRefreshTokens() {
         if (!this.refreshTokenStorePath) {
             return;
         }
+        // Keep the on-disk file compact and prevent expired tokens from coming back after restart.
         const now = Date.now();
         for (const [token, entry] of this.refreshTokens) {
             if (entry.expiresAt < now) {
@@ -102,6 +113,9 @@ export class OidcState {
         fs.renameSync(tmpPath, this.refreshTokenStorePath);
     }
 }
+/**
+ * Validates a parsed refresh-token record before loading it from disk.
+ */
 function isRefreshToken(value) {
     if (!value || typeof value !== "object") {
         return false;

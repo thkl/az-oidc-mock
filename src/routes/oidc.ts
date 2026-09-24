@@ -67,7 +67,13 @@ type PasskeyChallenge = {
   expiresAt: number;
 };
 
+/**
+ * Registers tenant-aware OIDC, userinfo, logout, MFA, and passkey routes.
+ */
 export function registerOidcRoutes(app: Express, context: RouteContext): void {
+  /**
+   * Serves Azure-compatible OIDC discovery metadata.
+   */
   app.get(["/:tenantId/.well-known/openid-configuration", "/:tenantId/v2.0/.well-known/openid-configuration"], (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -77,6 +83,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     res.json(createDiscoveryDocument(config, tenant));
   });
 
+  /**
+   * Serves the public JWKS used by clients to verify mock tokens.
+   */
   app.get("/:tenantId/discovery/v2.0/keys", (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -85,6 +94,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     res.json(context.keys.jwks);
   });
 
+  /**
+   * Handles authorization requests and either reuses a session or renders login.
+   */
   app.get("/:tenantId/oauth2/v2.0/authorize", (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -108,6 +120,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       sendAuthorizeError(res, req.query.redirect_uri, req.query.state, validation.error, validation.description);
       return;
     }
+    // Existing signed sessions satisfy interactive authorize requests unless prompt=none needs an error.
     if (enableSessions === true) {
       const sessionUser = getSessionUser(req, config, tenant, context.sessionSecret);
       if (sessionUser) {
@@ -129,6 +142,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
+    // No reusable session exists, so render a tenant-specific login experience.
     res.type("html").send(
       renderLoginPage(tenant, {
         client_id: validation.client.clientId,
@@ -142,6 +156,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     );
   });
 
+  /**
+   * Handles password/user-picker login, MFA steps, optional passkey setup, and code issuance.
+   */
   app.post("/:tenantId/login", (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -159,6 +176,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
+    // Optional passkey setup can be skipped only when tenant policy allows it.
     const passkeyChallenge = readString(req.body.passkey_challenge)
       ? verifyPasskeyChallenge(readString(req.body.passkey_challenge), tenant.tenantId, context.sessionSecret)
       : undefined;
@@ -180,6 +198,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       }
     }
 
+    // A signed MFA challenge means this POST is continuing the second-factor flow.
     const challenge = readString(req.body.mfa_challenge)
       ? verifyMfaChallenge(readString(req.body.mfa_challenge), tenant.tenantId, context.sessionSecret)
       : undefined;
@@ -204,6 +223,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
+    // MFA is evaluated before passkey setup, so mandatory MFA cannot be bypassed by enrollment.
     const mfa = handleMfaLoginStep({
       tenant,
       user: login.user.user,
@@ -219,6 +239,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
+    // First successful password login can branch into passkey enrollment before code issuance.
     if (shouldShowPasskeySetup(tenant, context.passkeyStore.isEnrolled(login.user.homeTenant.tenantId, login.user.user.sub))) {
       const passkeyChallengeValue = createPasskeyLoginChallenge({
         tenantId: tenant.tenantId,
@@ -246,6 +267,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     });
   });
 
+  /**
+   * Creates WebAuthn registration options for the passkey setup page.
+   */
   app.post("/:tenantId/passkeys/register/options", (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -259,6 +283,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     }
 
     const webauthnChallenge = createPasskeyChallenge();
+    // The registration token binds the browser WebAuthn challenge to the original authorize request.
     const registrationToken = createPasskeyLoginChallenge({ ...passkeyChallenge, webauthnChallenge }, context.sessionSecret);
     res.json({
       registrationToken,
@@ -282,6 +307,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     });
   });
 
+  /**
+   * Verifies and stores a newly created WebAuthn credential.
+   */
   app.post("/:tenantId/passkeys/register", (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -297,6 +325,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
+    // Verify browser client data, authenticator data, and the credential public key.
     const registration = verifyPasskeyRegistration({
       clientDataJSON: readString(response.clientDataJSON) ?? "",
       attestationObject: readString(response.attestationObject) ?? "",
@@ -309,6 +338,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
+    // Store credentials against the home tenant so shared users keep one passkey identity.
     context.passkeyStore.add({
       tenantId: user.homeTenant.tenantId,
       userSub: user.user.sub,
@@ -325,6 +355,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     res.json({ redirect });
   });
 
+  /**
+   * Creates WebAuthn authentication options for passwordless passkey login.
+   */
   app.post("/:tenantId/passkeys/authenticate/options", (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -339,6 +372,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
+    // Restrict the browser to credentials already registered for the resolved user.
     const webauthnChallenge = createPasskeyChallenge();
     const authenticationToken = createPasskeyLoginChallenge({
       tenantId: tenant.tenantId,
@@ -358,6 +392,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     });
   });
 
+  /**
+   * Verifies a WebAuthn assertion and returns the normal authorization-code redirect.
+   */
   app.post("/:tenantId/passkeys/authenticate", (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -373,6 +410,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
+    // The assertion proves possession of the private key for one stored credential.
     const ok = context.passkeyStore.verify({
       tenantId: user.homeTenant.tenantId,
       userSub: user.user.sub,
@@ -398,6 +436,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     res.json({ redirect });
   });
 
+  /**
+   * Handles token grants for authorization codes and refresh tokens.
+   */
   app.post("/:tenantId/oauth2/v2.0/token", async (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -436,6 +477,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     sendTokenError(res, "unsupported_grant_type", "Only authorization_code and refresh_token are supported");
   });
 
+  /**
+   * Serves OIDC userinfo for a valid active access token.
+   */
   app.all("/:tenantId/oidc/userinfo", async (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -476,6 +520,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     });
   });
 
+  /**
+   * Clears the tenant login session cookie and optionally redirects afterwards.
+   */
   app.get("/:tenantId/oauth2/v2.0/logout", (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -491,6 +538,9 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
   });
 }
 
+/**
+ * Builds the Azure v2.0-style discovery document for a tenant.
+ */
 function createDiscoveryDocument(config: AppConfig, tenant: MockTenant): Record<string, unknown> {
   const base = config.baseUrl.replace(/\/$/, "");
   const encodedTenantId = encodeURIComponent(tenant.tenantId);
@@ -538,6 +588,9 @@ function createDiscoveryDocument(config: AppConfig, tenant: MockTenant): Record<
   };
 }
 
+/**
+ * Validates an authorize request and normalizes it into internal state.
+ */
 function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
   | {
     ok: true;
@@ -582,6 +635,7 @@ function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
     return { ok: false, error: "invalid_scope", description: "Requested scope is not allowed for client" };
   }
 
+  // Device binding is optional, but configured tenants require active devices for issued tokens.
   const device = resolveRequestedDevice(tenant, query.device_id);
   if (!device.ok) {
     return { ok: false, error: "access_denied", description: device.description };
@@ -601,6 +655,9 @@ function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
   };
 }
 
+/**
+ * Resolves requested or implicit device binding for the authorize request.
+ */
 function resolveRequestedDevice(
   tenant: MockTenant,
   requestedDeviceId?: string
@@ -620,6 +677,9 @@ function resolveRequestedDevice(
   return { ok: true, deviceId: activeDevice?.deviceId };
 }
 
+/**
+ * Redirects to the client callback with a newly created authorization code.
+ */
 function redirectWithCode(
   res: Response,
   oidcState: OidcState,
@@ -631,6 +691,9 @@ function redirectWithCode(
   res.redirect(createCodeRedirectUrl(oidcState, tenantId, client, request, userSub));
 }
 
+/**
+ * Creates the authorization-code callback URL without writing to the response.
+ */
 function createCodeRedirectUrl(
   oidcState: OidcState,
   tenantId: string,
@@ -658,6 +721,9 @@ function createCodeRedirectUrl(
   return redirectUrl.toString();
 }
 
+/**
+ * Handles optional and mandatory TOTP steps after primary login succeeds.
+ */
 function handleMfaLoginStep(args: {
   tenant: MockTenant;
   user: MockUser;
@@ -680,6 +746,7 @@ function handleMfaLoginStep(args: {
   const enrolled = args.mfaStore.isEnrolled(args.tenant.tenantId, args.user.sub);
 
   if (args.challenge) {
+    // Existing challenge means the user is choosing, setting up, or verifying MFA.
     if (action === "continue" && !args.tenant.twoFactorMandatory && !enrolled) {
       return { complete: true };
     }
@@ -687,6 +754,7 @@ function handleMfaLoginStep(args: {
     if (action === "setup") {
       const secret = args.challenge.setupSecret ?? createTotpSecret();
       if (!code) {
+        // First setup click shows the secret and asks for a code from the authenticator app.
         const setupChallenge = createMfaChallenge({
           tenantId: args.tenant.tenantId,
           userSub: args.user.sub,
@@ -710,6 +778,7 @@ function handleMfaLoginStep(args: {
       }
 
       if (!verifyTotpSecret(secret, code)) {
+        // Invalid setup codes keep the same secret so the displayed authenticator entry remains usable.
         const retryChallenge = createMfaChallenge({
           tenantId: args.tenant.tenantId,
           userSub: args.user.sub,
@@ -737,6 +806,7 @@ function handleMfaLoginStep(args: {
       return { complete: true };
     }
 
+    // Enrolled users must provide a valid TOTP code before login can continue.
     if (action === "verify" && code && args.mfaStore.verifyTotp(args.tenant.tenantId, args.user.sub, code)) {
       return { complete: true };
     }
@@ -755,6 +825,7 @@ function handleMfaLoginStep(args: {
     return { complete: false };
   }
 
+  // No challenge yet: decide whether the user must verify, must set up, or may choose.
   if (enrolled) {
     args.res.type("html").send(renderMfaPage(args.tenant, {
       mode: "verify",
@@ -804,6 +875,9 @@ function handleMfaLoginStep(args: {
   return { complete: false };
 }
 
+/**
+ * Finishes an interactive login by setting a session cookie and issuing a code.
+ */
 function completeLogin(args: {
   tenant: MockTenant;
   user: MockUser;
@@ -826,6 +900,9 @@ function completeLogin(args: {
   redirectWithCode(args.res, args.state, args.tenant.tenantId, args.validation.client, args.validation.request, args.user.sub);
 }
 
+/**
+ * Converts a validated authorize request back into hidden login form fields.
+ */
 function authorizeParamsFromRequest(client: MockClient, request: ValidatedAuthorizeRequest): Record<string, string> {
   return {
     client_id: client.clientId,
@@ -838,6 +915,9 @@ function authorizeParamsFromRequest(client: MockClient, request: ValidatedAuthor
   };
 }
 
+/**
+ * Resolves the user stored inside a signed MFA challenge.
+ */
 function authenticateMfaChallengeUser(
   config: AppConfig,
   tenant: MockTenant,
@@ -851,6 +931,9 @@ function authenticateMfaChallengeUser(
   return user ? { ok: true, user } : { ok: false, description: "User no longer exists" };
 }
 
+/**
+ * Signs the transient MFA state carried through login form posts.
+ */
 function createMfaChallenge(challenge: Omit<MfaChallenge, "expiresAt">, sessionSecret: string): string {
   const payload = Buffer.from(JSON.stringify({
     ...challenge,
@@ -860,6 +943,9 @@ function createMfaChallenge(challenge: Omit<MfaChallenge, "expiresAt">, sessionS
   return `v1.${payload}.${signature}`;
 }
 
+/**
+ * Verifies and decodes a signed MFA challenge.
+ */
 function verifyMfaChallenge(value: string | undefined, tenantId: string, sessionSecret: string): MfaChallenge | undefined {
   if (!value) {
     return undefined;
@@ -874,6 +960,7 @@ function verifyMfaChallenge(value: string | undefined, tenantId: string, session
     return undefined;
   }
 
+  // The payload is trusted only after the signature matches.
   try {
     const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as MfaChallenge;
     if (
@@ -891,10 +978,16 @@ function verifyMfaChallenge(value: string | undefined, tenantId: string, session
   }
 }
 
+/**
+ * Decides whether a logged-in user should be asked to enroll a passkey.
+ */
 function shouldShowPasskeySetup(tenant: MockTenant, enrolled: boolean): boolean {
   return (tenant.passkeysEnabled || tenant.passkeysMandatory) && !enrolled;
 }
 
+/**
+ * Signs transient passkey setup/authentication state.
+ */
 function createPasskeyLoginChallenge(challenge: Omit<PasskeyChallenge, "expiresAt">, sessionSecret: string): string {
   const payload = Buffer.from(JSON.stringify({
     ...challenge,
@@ -904,6 +997,9 @@ function createPasskeyLoginChallenge(challenge: Omit<PasskeyChallenge, "expiresA
   return `v1.${payload}.${signature}`;
 }
 
+/**
+ * Verifies and decodes signed passkey setup/authentication state.
+ */
 function verifyPasskeyChallenge(value: string | undefined, tenantId: string, sessionSecret: string): PasskeyChallenge | undefined {
   if (!value) return undefined;
   const [version, payload, signature] = value.split(".");
@@ -912,6 +1008,7 @@ function verifyPasskeyChallenge(value: string | undefined, tenantId: string, ses
   const expected = crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
   if (!constantTimeEqual(signature, expected)) return undefined;
 
+  // The payload may contain the WebAuthn challenge and original authorize request.
   try {
     const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as PasskeyChallenge;
     if (
@@ -930,15 +1027,24 @@ function verifyPasskeyChallenge(value: string | undefined, tenantId: string, ses
   }
 }
 
+/**
+ * Returns the browser origin that WebAuthn client data must report.
+ */
 function passkeyOrigin(config: AppConfig): string {
   const url = new URL(config.baseUrl);
   return url.origin;
 }
 
+/**
+ * Returns the relying-party ID used for passkey registration and authentication.
+ */
 function passkeyRpId(config: AppConfig): string {
   return new URL(config.baseUrl).hostname;
 }
 
+/**
+ * Validates decoded challenge state before trusting it as an authorize request.
+ */
 function isValidatedAuthorizeRequest(value: unknown): value is ValidatedAuthorizeRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -953,13 +1059,18 @@ function isValidatedAuthorizeRequest(value: unknown): value is ValidatedAuthoriz
     (request.deviceId === undefined || typeof request.deviceId === "string");
 }
 
+/**
+ * Compares two strings without leaking timing differences for equal-length values.
+ */
 function constantTimeEqual(actualValue: string, expectedValue: string): boolean {
   const actual = Buffer.from(actualValue);
   const expected = Buffer.from(expectedValue);
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 
-
+/**
+ * Exchanges an authorization code for access, ID, and optional refresh tokens.
+ */
 async function handleAuthorizationCodeGrant(args: {
   config: AppConfig;
   keys: SigningKeys;
@@ -981,6 +1092,7 @@ async function handleAuthorizationCodeGrant(args: {
     return;
   }
 
+  // Authorization codes are single-use and must match tenant, client, and redirect URI.
   const entry = args.state.consumeCode(code);
   if (
     !entry ||
@@ -1007,6 +1119,7 @@ async function handleAuthorizationCodeGrant(args: {
     return;
   }
 
+  // Refresh tokens are issued only when offline_access was part of the original request.
   const refreshTokenExpiresAt = Date.now() + args.config.refreshTokenLifetimeSeconds * 1000;
   const refreshToken = entry.scope.includes("offline_access")
     ? args.state.createRefreshToken({
@@ -1041,6 +1154,9 @@ async function handleAuthorizationCodeGrant(args: {
   });
 }
 
+/**
+ * Exchanges a refresh token for a new token set, rotating it when configured.
+ */
 async function handleRefreshTokenGrant(args: {
   config: AppConfig;
   keys: SigningKeys;
@@ -1061,6 +1177,7 @@ async function handleRefreshTokenGrant(args: {
     return;
   }
 
+  // Refresh tokens are scoped to the tenant and client that received them.
   const entry = args.state.getRefreshToken(token);
   if (!entry || entry.tenantId !== args.tenant.tenantId || entry.clientId !== args.client.clientId) {
     args.logger.warn("refresh token grant rejected", {
@@ -1082,6 +1199,7 @@ async function handleRefreshTokenGrant(args: {
     return;
   }
 
+  // Device binding invalidates refresh tokens when the original login device is removed or disabled.
   const device = entry.deviceId ? findDevice(args.tenant, entry.deviceId) : undefined;
   if (isInactiveRefreshTokenDevice(args.tenant, entry.deviceId, device)) {
     args.logger.warn("refresh token grant rejected because device is inactive", {
@@ -1097,6 +1215,7 @@ async function handleRefreshTokenGrant(args: {
   let refreshToken = token;
   let refreshTokenExpiresAt = entry.expiresAt;
   if (args.config.rotateRefreshTokens) {
+    // Rotation mirrors real-world refresh-token replay mitigation.
     args.state.revokeRefreshToken(token);
     refreshTokenExpiresAt = Date.now() + args.config.refreshTokenLifetimeSeconds * 1000;
     refreshToken = args.state.createRefreshToken({
@@ -1131,6 +1250,9 @@ async function handleRefreshTokenGrant(args: {
   });
 }
 
+/**
+ * Sends the OAuth token response payload.
+ */
 async function sendTokenSet(
   res: Response,
   args: {
@@ -1158,6 +1280,7 @@ async function sendTokenSet(
     deviceId: args.deviceId
   };
   const raw = JSON.stringify({ uid: args.user.sub, utid: args.tenant.tenantId });
+  // Azure clients expect client_info to be base64url JSON with uid and utid.
   const enc = Buffer.from(raw)
     .toString("base64")
     .replace(/\+/g, "-")
@@ -1179,6 +1302,9 @@ async function sendTokenSet(
   });
 }
 
+/**
+ * Authenticates a token endpoint client through Basic auth or form fields.
+ */
 function authenticateClient(tenant: MockTenant, req: Request): MockClient | undefined {
   const basic = parseBasicAuth(req);
   const clientId = basic?.clientId ?? readString(req.body.client_id);
@@ -1199,6 +1325,9 @@ function authenticateClient(tenant: MockTenant, req: Request): MockClient | unde
   return client;
 }
 
+/**
+ * Parses OAuth client credentials from an Authorization: Basic header.
+ */
 function parseBasicAuth(req: Request): { clientId: string; clientSecret: string } | undefined {
   const header = req.header("authorization");
   if (!header?.startsWith("Basic ")) {
@@ -1215,6 +1344,9 @@ function parseBasicAuth(req: Request): { clientId: string; clientSecret: string 
   };
 }
 
+/**
+ * Authenticates either the mock user picker or secure email/password login.
+ */
 function authenticateLogin(
   config: AppConfig,
   tenant: MockTenant,
@@ -1222,11 +1354,13 @@ function authenticateLogin(
   passwordStore: PasswordStore
 ): { ok: true; user: ResolvedUser } | { ok: false; description: string } {
   if (!tenant.secure) {
+    // Non-secure tenants intentionally trust the selected mock user.
     const userSub = readString(req.body.user_sub);
     const user = userSub ? resolveEffectiveUser(config, tenant, userSub) : undefined;
     return user ? { ok: true, user } : { ok: false, description: "Unknown user" };
   }
 
+  // Secure tenants verify the password against the source tenant for shared users.
   const username = readString(req.body.username)?.toLowerCase();
   const password = readString(req.body.password);
   if (!username || !password) {
@@ -1241,6 +1375,9 @@ function authenticateLogin(
   return { ok: true, user };
 }
 
+/**
+ * Collects the tenant's advertised scopes from every configured client.
+ */
 function tenantScopes(tenant: MockTenant): string[] {
   return [...new Set(tenant.clients.flatMap((client) => client.allowedScopes))].sort();
 }

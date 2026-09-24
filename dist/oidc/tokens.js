@@ -25,6 +25,7 @@ const RESERVED_CLAIMS = new Set([
 export async function createIdToken(input) {
     const now = Math.floor(Date.now() / 1000);
     const issuer = tenantIssuer(input.config, input.tenant.tenantId);
+    // Standard OIDC/Azure claims are written first and cannot be overwritten by config claims.
     const claims = {
         iss: issuer,
         aud: input.client.clientId,
@@ -55,6 +56,7 @@ export async function createIdToken(input) {
 export async function createAccessToken(input) {
     const now = Math.floor(Date.now() / 1000);
     const issuer = tenantIssuer(input.config, input.tenant.tenantId);
+    // Access tokens model Azure's scp claim while keeping configured custom claims additive only.
     return signJwt({
         iss: issuer,
         aud: input.client.clientId,
@@ -78,10 +80,12 @@ export async function createAccessToken(input) {
  */
 export async function verifyAccessToken(input) {
     try {
+        // jose validates the signature, issuer, expiry, and optional audience before local checks.
         const { payload } = await jwtVerify(input.token, createLocalJWKSet(input.keys.jwks), {
             issuer: tenantIssuer(input.config, input.tenant.tenantId),
             ...(input.audience ? { audience: input.audience } : {})
         });
+        // Local checks keep internal verification responses explicit and Azure-like.
         if (payload.ver !== "2.0") {
             return {
                 ok: false,
@@ -128,9 +132,15 @@ function signJwt(claims, keys) {
         .setProtectedHeader({ alg: "RS256", kid: keys.kid, typ: "JWT" })
         .sign(keys.privateKey);
 }
+/**
+ * Removes custom claims that would otherwise overwrite protected JWT claims.
+ */
 function customClaims(claims) {
     return Object.fromEntries(Object.entries(claims).filter(([key]) => !RESERVED_CLAIMS.has(key)));
 }
+/**
+ * Converts jose verification errors into stable OAuth error descriptions.
+ */
 function describeJwtVerificationError(error) {
     if (error instanceof errors.JWTExpired) {
         return "Token is expired";

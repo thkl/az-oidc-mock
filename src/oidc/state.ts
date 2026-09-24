@@ -41,6 +41,9 @@ export class OidcState {
   private authorizationCodes = new Map<string, AuthorizationCode>();
   private refreshTokens = new Map<string, RefreshToken>();
 
+  /**
+   * Creates state storage and hydrates persisted refresh tokens when configured.
+   */
   constructor(private readonly refreshTokenStorePath?: string) {
     this.loadRefreshTokens();
   }
@@ -102,6 +105,9 @@ export class OidcState {
     this.saveRefreshTokens();
   }
 
+  /**
+   * Loads persisted refresh tokens and drops expired or malformed entries.
+   */
   private loadRefreshTokens(): void {
     if (!this.refreshTokenStorePath || !fs.existsSync(this.refreshTokenStorePath)) {
       return;
@@ -113,6 +119,7 @@ export class OidcState {
       throw new Error(`Unsupported refresh token store format: ${this.refreshTokenStorePath}`);
     }
 
+    // Only valid, non-expired tokens are hydrated into memory.
     const now = Date.now();
     for (const token of parsed.refreshTokens) {
       if (isRefreshToken(token) && token.expiresAt >= now) {
@@ -122,11 +129,15 @@ export class OidcState {
     this.saveRefreshTokens();
   }
 
+  /**
+   * Persists refresh tokens after pruning expired records.
+   */
   private saveRefreshTokens(): void {
     if (!this.refreshTokenStorePath) {
       return;
     }
 
+    // Keep the on-disk file compact and prevent expired tokens from coming back after restart.
     const now = Date.now();
     for (const [token, entry] of this.refreshTokens) {
       if (entry.expiresAt < now) {
@@ -146,6 +157,9 @@ export class OidcState {
   }
 }
 
+/**
+ * Validates a parsed refresh-token record before loading it from disk.
+ */
 function isRefreshToken(value: unknown): value is RefreshToken {
   if (!value || typeof value !== "object") {
     return false;

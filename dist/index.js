@@ -34,11 +34,13 @@ const app = createApp({
     adminToken,
     sessionSecret,
     configPath,
+    // Keeps the in-process config in sync when the admin UI writes a valid file.
     onConfigSaved: (saved) => {
         config = saved;
     }
 });
 watchConfig(configPath, (reloaded) => {
+    // Hot reload publishes only configs that passed validation.
     config = reloaded;
     logger.info("config reloaded", {
         configPath,
@@ -46,6 +48,7 @@ watchConfig(configPath, (reloaded) => {
         verbose: config.verbose
     });
 }, (error) => {
+    // Invalid file changes are logged while the last known-good config remains active.
     logger.error("config reload failed; keeping last valid config", {
         configPath,
         error: error instanceof Error ? error.message : String(error)
@@ -56,6 +59,7 @@ const server = config.tls
     ? https.createServer(loadTlsOptions(config.tls, configPath), app)
     : app;
 server.listen(port, () => {
+    // Startup log includes all persistence paths operators may need to mount or inspect.
     logger.info("Azure OIDC mock listening", {
         baseUrl: config.baseUrl.replace(/\/$/, ""),
         port,

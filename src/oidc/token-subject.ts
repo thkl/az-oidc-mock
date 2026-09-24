@@ -5,6 +5,9 @@ import { verifyAccessToken } from "./tokens.js";
 import { resolveEffectiveUser } from "./users.js";
 import { findClient, findDevice } from "./validation.js";
 
+/**
+ * Verifies an access token and resolves its still-active client, user, and device.
+ */
 export async function resolveActiveTokenSubject(input: {
   config: AppConfig;
   keys: SigningKeys;
@@ -22,6 +25,9 @@ export async function resolveActiveTokenSubject(input: {
   return subject.ok ? subject : { ok: false, error: "invalid_token", description: subject.description };
 }
 
+/**
+ * Resolves already-verified token claims against the current config state.
+ */
 export function resolveVerifiedTokenSubject(
   config: AppConfig,
   tenant: MockTenant,
@@ -34,6 +40,7 @@ export function resolveVerifiedTokenSubject(
   const device = typeof claims.deviceid === "string"
     ? findDevice(tenant, claims.deviceid)
     : undefined;
+  // Tokens are rejected when the backing client, user, or login device has been disabled.
   if (!client || !client.enabled || !user || isInactiveTokenDevice(tenant, claims.deviceid, device)) {
     return {
       ok: false,
@@ -43,6 +50,9 @@ export function resolveVerifiedTokenSubject(
   return { ok: true, client, user, ...(device ? { device } : {}) };
 }
 
+/**
+ * Checks refresh-token device binding against the tenant's active device list.
+ */
 export function isInactiveRefreshTokenDevice(
   tenant: MockTenant,
   deviceId: string | undefined,
@@ -54,6 +64,9 @@ export function isInactiveRefreshTokenDevice(
   return !device || !device.enabled;
 }
 
+/**
+ * Produces the specific reason a token subject is no longer valid.
+ */
 function describeInactiveTokenSubject(
   tenant: MockTenant,
   client: MockClient | undefined,
@@ -76,6 +89,9 @@ function describeInactiveTokenSubject(
   return "Token is no longer active";
 }
 
+/**
+ * Checks access-token device binding against the tenant's active device list.
+ */
 function isInactiveTokenDevice(
   tenant: MockTenant,
   deviceId: unknown,

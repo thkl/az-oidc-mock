@@ -68,6 +68,9 @@ export function renderLoginPage(tenant, params, error, users = tenant.users) {
 </body>
 </html>`;
 }
+/**
+ * Renders the passkey enrollment page shown after password/MFA login.
+ */
 export function renderPasskeyPage(tenant, view) {
     const hiddenFields = Object.entries(view.params)
         .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
@@ -109,10 +112,12 @@ export function renderPasskeyPage(tenant, view) {
   </main>
   <script>
     const challenge = ${JSON.stringify(view.challenge)};
+    // WebAuthn uses ArrayBuffer values, while the server transports them as base64url strings.
     const decode = (value) => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=')), (char) => char.charCodeAt(0));
     const encode = (value) => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
     document.getElementById('setup-passkey').addEventListener('click', async () => {
       try {
+        // Fetch signed registration options, invoke the browser authenticator, then save it.
         const optionsResponse = await fetch('/${encodeURIComponent(tenant.tenantId)}/passkeys/register/options', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -148,6 +153,9 @@ export function renderPasskeyPage(tenant, view) {
 </body>
 </html>`;
 }
+/**
+ * Renders the TOTP MFA page for setup, verification, or optional enrollment.
+ */
 export function renderMfaPage(tenant, view) {
     const hiddenFields = Object.entries(view.params)
         .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
@@ -198,6 +206,9 @@ export function renderMfaPage(tenant, view) {
 </body>
 </html>`;
 }
+/**
+ * Renders the specific MFA form controls for the current MFA mode.
+ */
 function renderMfaBody(view, error) {
     if (view.mode === "choose") {
         return `
@@ -228,9 +239,13 @@ function renderMfaBody(view, error) {
       </label>
       <button class="primary" type="submit" name="mfa_action" value="verify">Verify</button>`;
 }
+/**
+ * Renders browser-side passkey login code for the secure login page.
+ */
 function renderPasskeyLoginScript(tenant, params) {
     return `<script>
     const passkeyParams = ${JSON.stringify(params)};
+    // WebAuthn uses ArrayBuffer values, while the server transports them as base64url strings.
     const decode = (value) => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=')), (char) => char.charCodeAt(0));
     const encode = (value) => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
     document.getElementById('passkey-login')?.addEventListener('click', async () => {
@@ -240,6 +255,7 @@ function renderPasskeyLoginScript(tenant, params) {
         return;
       }
       try {
+        // Fetch allowed credentials, ask the browser to sign in, then complete authorization.
         const optionsResponse = await fetch('/${encodeURIComponent(tenant.tenantId)}/passkeys/authenticate/options', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

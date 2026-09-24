@@ -7,8 +7,13 @@ export type ResolvedUser = {
   shared: boolean;
 };
 
+/**
+ * Builds the users that may authenticate in a tenant, including shared accounts.
+ */
 export function listEffectiveUsers(config: AppConfig, tenant: MockTenant): ResolvedUser[] {
   const users = tenant.users.map((user) => ({ user, homeTenant: tenant, shared: false }));
+
+  // Shared users keep their home tenant ownership while becoming selectable in this tenant.
   for (const sharedUser of tenant.sharedUsers ?? []) {
     const homeTenant = findTenant(config, sharedUser.tenantId);
     const user = homeTenant ? findUser(homeTenant, sharedUser.userSub) : undefined;
@@ -19,10 +24,16 @@ export function listEffectiveUsers(config: AppConfig, tenant: MockTenant): Resol
   return users;
 }
 
+/**
+ * Resolves a subject against local and shared users for the target tenant.
+ */
 export function resolveEffectiveUser(config: AppConfig, tenant: MockTenant, userSub: string): ResolvedUser | undefined {
   return listEffectiveUsers(config, tenant).find((entry) => entry.user.sub === userSub);
 }
 
+/**
+ * Resolves a secure-login username against email and preferred_username values.
+ */
 export function resolveEffectiveUserByUsername(
   config: AppConfig,
   tenant: MockTenant,

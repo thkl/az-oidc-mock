@@ -1,5 +1,8 @@
 import type { MockUser } from "../config.js";
 
+/**
+ * Renders the authenticated admin single-page UI.
+ */
 export function renderAdminPage(user: MockUser): string {
   return `<!doctype html>
 <html lang="en">
@@ -386,6 +389,7 @@ export function renderAdminPage(user: MockUser): string {
   </div>
 
   <script>
+    // Creates a new tenant object with the same defaults as the server schema.
     const blankTenant = () => ({
       tenantId: 'tenant-' + Math.random().toString(36).slice(2, 7),
       displayName: 'New Tenant',
@@ -401,14 +405,19 @@ export function renderAdminPage(user: MockUser): string {
       passkeysEnabled: false,
       passkeysMandatory: false
     });
+    // Converts multiline or comma-separated admin text fields into string arrays.
     const splitLines = (value) => String(value || '').split(/\\r?\\n|,/).map((item) => item.trim()).filter(Boolean);
+    // Converts scope text into token-like values split on whitespace or commas.
     const splitTokens = (value) => String(value || '').split(/[\\s,]+/).map((item) => item.trim()).filter(Boolean);
+    // Produces a mutable copy without preserving references to the loaded config.
     const clone = (value) => JSON.parse(JSON.stringify(value));
+    // Generates URL-safe random values for client secrets and suggested passwords.
     const randomBase64Url = (bytes) => {
       const data = new Uint8Array(bytes);
       crypto.getRandomValues(data);
       return btoa(String.fromCharCode(...data)).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
     };
+    // Escapes text before rendering dynamic config values into HTML.
     const escapeText = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
       '&': '&amp;',
       '<': '&lt;',
@@ -416,6 +425,7 @@ export function renderAdminPage(user: MockUser): string {
       '"': '&quot;',
       "'": '&#39;'
     })[char]);
+    // Adds UI-only text fields and normalized booleans to the loaded config.
     const decorate = (config) => {
       const copy = clone(config);
       for (const tenant of copy.tenants) {
@@ -437,6 +447,7 @@ export function renderAdminPage(user: MockUser): string {
       }
       return copy;
     };
+    // Removes UI-only fields and converts text inputs back into persisted config shape.
     const clean = (config) => {
       const copy = clone(config);
       for (const tenant of copy.tenants) {
@@ -465,6 +476,7 @@ export function renderAdminPage(user: MockUser): string {
       return copy;
     };
 
+    // Holds all mutable browser-side UI state for the admin app.
     const state = {
       loading: true,
       saving: false,
@@ -477,6 +489,7 @@ export function renderAdminPage(user: MockUser): string {
       themeMode: localStorage.getItem('az_oidc_admin_theme') || 'system',
       status: { type: '', message: '' }
     };
+    // Selection helpers keep render/update handlers compact.
     const selectedTenant = () => state.editable.tenants.find((tenant) => tenant.tenantId === state.selectedTenantId) || state.editable.tenants[0];
     const selectedClient = () => selectedTenant()?.clients[state.selectedClientIndex];
     const selectedUser = () => selectedTenant()?.users[state.selectedUserIndex];
@@ -489,6 +502,7 @@ export function renderAdminPage(user: MockUser): string {
         label: (user.name || user.preferred_username || user.sub) + ' - ' + (tenant.displayName || tenant.tenantId)
       })))
       : [];
+    // Re-renders the full admin app and rebinds handlers because the DOM is replaced.
     const render = () => {
       const tenant = selectedTenant();
       const client = selectedClient();
@@ -528,6 +542,7 @@ export function renderAdminPage(user: MockUser): string {
         </main>\`;
       bind();
     };
+    // Renders tenant settings plus the client and user editor panels.
     const renderTenant = (tenant, client, user) => \`
       <section class="panel" aria-labelledby="tenant-settings-title">
         <div class="panel-header"><h2 id="tenant-settings-title">Tenant Settings</h2></div>
@@ -563,6 +578,7 @@ export function renderAdminPage(user: MockUser): string {
           \${user ? renderUser(tenant, user) : '<div class="empty">Select or add a user.</div>'}
         </div>
       </section>\`;
+    // Renders controls for sharing users from other tenants into the selected tenant.
     const renderSharedAccounts = (tenant) => {
       const options = shareUserOptions();
       if (!options.length) return '';
@@ -570,6 +586,7 @@ export function renderAdminPage(user: MockUser): string {
       const enabled = reference && (tenant.sharedUsers || []).some((entry) => entry.tenantId === reference.tenantId && entry.userSub === reference.userSub);
       return \`<div class="share-box"><strong>Shared Accounts</strong><label>Source User <select data-field="selectedShareUserKey"><option value="">Select a user</option>\${options.map((option) => \`<option value="\${escapeText(option.key)}" \${option.key === state.selectedShareUserKey ? 'selected' : ''}>\${escapeText(option.label)}</option>\`).join('')}</select></label>\${state.selectedShareUserKey ? \`<label class="check"><input type="checkbox" data-action="selected-share" \${enabled ? 'checked' : ''}> Share selected user with this tenant</label>\` : ''}</div>\`;
     };
+    // Renders the selected client's editable fields.
     const renderClient = (client) => \`<div class="panel-body">
       <div class="grid"><label>Client ID <input data-field="client.clientId" value="\${escapeText(client.clientId)}"></label><div class="secret-row"><label>Client Secret <input data-field="client.clientSecret" autocomplete="new-password" value="\${escapeText(client.clientSecret || '')}"></label><button type="button" data-action="generate-client-secret">Generate</button></div></div>
       <div class="checks"><label class="check"><input data-field="client.enabled" type="checkbox" \${client.enabled ? 'checked' : ''}> Enabled</label></div>
@@ -577,6 +594,7 @@ export function renderAdminPage(user: MockUser): string {
       <label>Allowed Scopes <textarea data-field="client.allowedScopesText" spellcheck="false">\${escapeText(client.allowedScopesText || '')}</textarea></label>
       <div class="actions"><button class="danger" type="button" data-action="remove-client">Delete Client</button></div>
     </div>\`;
+    // Renders the selected user's editable fields and security actions.
     const renderUser = (tenant, user) => \`<div class="panel-body">
       <div class="grid"><label>Subject <input data-field="user.sub" value="\${escapeText(user.sub)}"></label><label>Name <input data-field="user.name" value="\${escapeText(user.name)}"></label><label>Email <input data-field="user.email" type="email" value="\${escapeText(user.email)}"></label><label>Preferred Username <input data-field="user.preferred_username" value="\${escapeText(user.preferred_username)}"></label></div>
       <label>Roles <textarea data-field="user.rolesText" spellcheck="false">\${escapeText(user.rolesText || '')}</textarea></label>
@@ -586,6 +604,7 @@ export function renderAdminPage(user: MockUser): string {
       \${renderShareTargets(tenant, user)}
       <div class="actions"><button class="danger" type="button" data-action="remove-user">Delete User</button></div>
     </div>\`;
+    // Renders checkboxes that share the selected user into other tenants.
     const renderShareTargets = (tenant, user) => {
       const targets = shareTargets();
       if (!targets.length) return '';
@@ -594,10 +613,12 @@ export function renderAdminPage(user: MockUser): string {
         return \`<label class="check"><input type="checkbox" data-action="user-share" data-index="\${index}" \${checked ? 'checked' : ''}> \${escapeText(target.displayName || target.tenantId)}</label>\`;
       }).join('')}</div>\`;
     };
+    // Re-attaches listeners after every render.
     const bind = () => {
       document.querySelectorAll('[data-field]').forEach((element) => element.addEventListener('change', updateField));
       document.querySelectorAll('[data-action]').forEach((element) => element.addEventListener('click', handleAction));
     };
+    // Applies a changed form field to the editable state object.
     const updateField = (event) => {
       const field = event.currentTarget.dataset.field;
       const tenant = selectedTenant();
@@ -629,6 +650,7 @@ export function renderAdminPage(user: MockUser): string {
       if (field === 'selectedShareUserKey') state.selectedShareUserKey = value;
       render();
     };
+    // Dispatches toolbar/list/action button clicks to their behavior.
     const handleAction = async (event) => {
       const action = event.currentTarget.dataset.action;
       if (action === 'theme') return setTheme(event.currentTarget.dataset.theme);
@@ -653,6 +675,7 @@ export function renderAdminPage(user: MockUser): string {
       if (action === 'user-share') return setUserShare(shareTargets()[Number(event.currentTarget.dataset.index)], event.currentTarget.checked);
       if (action === 'selected-share') return setSelectedShare(event.currentTarget.checked);
     };
+    // Stores the selected theme preference and applies it to the document.
     const setTheme = (theme) => {
       state.themeMode = theme;
       if (theme === 'system') localStorage.removeItem('az_oidc_admin_theme');
@@ -661,6 +684,7 @@ export function renderAdminPage(user: MockUser): string {
       else delete document.documentElement.dataset.theme;
       render();
     };
+    // Loads the redacted config and CSRF token from the admin API.
     const load = async () => {
       state.loading = true; state.status = { type: '', message: '' }; render();
       try {
@@ -677,6 +701,7 @@ export function renderAdminPage(user: MockUser): string {
         state.loading = false; render();
       }
     };
+    // Saves the edited config through the admin API.
     const save = async () => {
       state.saving = true; state.status = { type: '', message: '' }; render();
       try {
@@ -691,10 +716,12 @@ export function renderAdminPage(user: MockUser): string {
         state.saving = false; render();
       }
     };
+    // Selects a tenant and resets child selections.
     const selectTenant = (index) => {
       state.selectedTenantId = state.editable.tenants[index]?.tenantId || '';
       state.selectedClientIndex = 0; state.selectedUserIndex = 0; state.selectedShareUserKey = ''; render();
     };
+    // Adds a tenant with one default client and one default user.
     const addTenant = () => {
       const tenant = decorate({ tenants: [blankTenant()] }).tenants[0];
       tenant.clients.push({ clientId: 'new-client', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
@@ -702,34 +729,41 @@ export function renderAdminPage(user: MockUser): string {
       state.editable.tenants.push(tenant);
       state.selectedTenantId = tenant.tenantId; render();
     };
+    // Copies the selected tenant as a starting point for a new tenant.
     const duplicateTenant = () => {
       const tenant = clone(selectedTenant());
       tenant.tenantId += '-copy'; tenant.displayName += ' Copy';
       state.editable.tenants.push(tenant); state.selectedTenantId = tenant.tenantId; render();
     };
+    // Removes the selected tenant after confirmation.
     const removeTenant = () => {
       if (!confirm('Delete this tenant from the config?')) return;
       state.editable.tenants = state.editable.tenants.filter((tenant) => tenant !== selectedTenant());
       state.selectedTenantId = state.editable.tenants[0]?.tenantId || ''; render();
     };
+    // Adds a client to the selected tenant.
     const addClient = () => {
       selectedTenant().clients.push({ clientId: 'new-client', clientSecret: '', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
       state.selectedClientIndex = selectedTenant().clients.length - 1; render();
     };
+    // Removes the selected client after confirmation.
     const removeClient = () => {
       if (!confirm('Delete this client?')) return;
       selectedTenant().clients.splice(state.selectedClientIndex, 1);
       state.selectedClientIndex = Math.max(0, state.selectedClientIndex - 1); render();
     };
+    // Adds a user to the selected tenant.
     const addUser = () => {
       selectedTenant().users.push({ sub: 'new-user', name: 'New User', email: 'user@example.test', preferred_username: 'user@example.test', roles: [], rolesText: '', claims: {}, claimsText: '{}' });
       state.selectedUserIndex = selectedTenant().users.length - 1; render();
     };
+    // Removes the selected user after confirmation.
     const removeUser = () => {
       if (!confirm('Delete this user?')) return;
       selectedTenant().users.splice(state.selectedUserIndex, 1);
       state.selectedUserIndex = Math.max(0, state.selectedUserIndex - 1); render();
     };
+    // Sends the pending password field to the password API without saving it in config.
     const setUserPassword = async () => {
       const tenant = selectedTenant(); const user = selectedUser();
       if (!tenant || !user?.newPassword) return;
@@ -743,6 +777,7 @@ export function renderAdminPage(user: MockUser): string {
       }
       render();
     };
+    // Removes the selected user's TOTP enrollment.
     const resetUserMfa = async () => {
       const tenant = selectedTenant(); const user = selectedUser();
       if (!tenant || !user || !confirm('Reset the authenticator enrollment for this user?')) return;
@@ -756,6 +791,7 @@ export function renderAdminPage(user: MockUser): string {
       }
       render();
     };
+    // Removes all passkeys registered for the selected user.
     const resetUserPasskeys = async () => {
       const tenant = selectedTenant(); const user = selectedUser();
       if (!tenant || !user || !confirm('Reset all passkeys for this user?')) return;
@@ -769,6 +805,7 @@ export function renderAdminPage(user: MockUser): string {
       }
       render();
     };
+    // Toggles whether the selected user is shared into a target tenant.
     const setUserShare = (targetTenant, checked) => {
       const tenant = selectedTenant(); const user = selectedUser();
       if (!tenant || !user || !targetTenant) return;
@@ -776,11 +813,13 @@ export function renderAdminPage(user: MockUser): string {
       if (checked) targetTenant.sharedUsers.push({ tenantId: tenant.tenantId, userSub: user.sub });
       render();
     };
+    // Parses the source tenant/user selected in the shared-account dropdown.
     const selectedShareReference = () => {
       const [tenantId, ...userSubParts] = String(state.selectedShareUserKey || '').split(':');
       const userSub = userSubParts.join(':');
       return tenantId && userSub ? { tenantId, userSub } : undefined;
     };
+    // Toggles the selected source user as shared into the current tenant.
     const setSelectedShare = (checked) => {
       const reference = selectedShareReference(); const tenant = selectedTenant();
       if (!tenant || !reference) return;
@@ -788,6 +827,7 @@ export function renderAdminPage(user: MockUser): string {
       if (checked) tenant.sharedUsers.push(reference);
       render();
     };
+    // Adds JSON and CSRF headers required by admin mutation endpoints.
     const adminJsonHeaders = () => ({ 'content-type': 'application/json', 'x-csrf-token': state.csrfToken });
     setTheme(state.themeMode);
     load();
@@ -796,6 +836,9 @@ export function renderAdminPage(user: MockUser): string {
 </html>`;
 }
 
+/**
+ * Renders setup guidance when the internal admin tenant is missing or invalid.
+ */
 export function renderAdminSetupPage(message: string, example: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -823,6 +866,9 @@ export function renderAdminSetupPage(message: string, example: string): string {
 </html>`;
 }
 
+/**
+ * Escapes dynamic text before placing it in server-rendered admin HTML.
+ */
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")

@@ -14,6 +14,9 @@ export function loadTlsOptions(tls, configPath) {
         cert: fs.readFileSync(paths.certPath)
     };
 }
+/**
+ * Resolves configured TLS file paths or the default generated paths beside config.json.
+ */
 function resolveTlsPaths(tls, configPath) {
     if (tls.keyPath && tls.certPath) {
         return {
@@ -27,6 +30,9 @@ function resolveTlsPaths(tls, configPath) {
         certPath: path.join(dir, "localhost-cert.pem")
     };
 }
+/**
+ * Generates a local self-signed certificate with openssl when files are missing.
+ */
 function ensureSelfSignedCertificate(tls, paths) {
     if (fs.existsSync(paths.keyPath) && fs.existsSync(paths.certPath)) {
         return;
@@ -34,6 +40,7 @@ function ensureSelfSignedCertificate(tls, paths) {
     fs.mkdirSync(path.dirname(paths.keyPath), { recursive: true });
     fs.mkdirSync(path.dirname(paths.certPath), { recursive: true });
     try {
+        // openssl is used here to avoid adding a certificate-generation dependency.
         execFileSync("openssl", [
             "req",
             "-x509",
@@ -57,10 +64,16 @@ function ensureSelfSignedCertificate(tls, paths) {
         throw new Error(`Failed to auto-generate TLS certificate with openssl: ${detail}`);
     }
 }
+/**
+ * Builds the OpenSSL subjectAltName extension for configured hosts.
+ */
 function subjectAltName(hosts) {
     const names = hosts.length > 0 ? hosts : ["localhost", "127.0.0.1"];
     return names.map((host) => `${isIpAddress(host) ? "IP" : "DNS"}:${host}`).join(",");
 }
+/**
+ * Detects IPv4 and IPv6 host strings for SAN formatting.
+ */
 function isIpAddress(host) {
     return /^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(":");
 }

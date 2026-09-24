@@ -7,7 +7,13 @@ import { constantTimeEqual } from "../oidc/session.js";
 import { getTenantOr404, readBearerToken, readObjectBody, readString } from "./http.js";
 import type { RouteContext } from "./types.js";
 
+/**
+ * Registers internal service endpoints for token introspection and password management.
+ */
 export function registerInternalRoutes(app: Express, context: RouteContext): void {
+  /**
+   * Verifies an access token for mocked downstream services.
+   */
   app.post("/:tenantId/internal/token/verify", async (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -25,6 +31,7 @@ export function registerInternalRoutes(app: Express, context: RouteContext): voi
       return;
     }
 
+    // First verify the JWT cryptographically, then ensure the backing config objects are active.
     const verification = await verifyAccessToken({ config, keys: context.keys, tenant, token, audience });
     if (!verification.ok) {
       context.logger.warn("internal token verification failed", {
@@ -70,6 +77,9 @@ export function registerInternalRoutes(app: Express, context: RouteContext): voi
     });
   });
 
+  /**
+   * Sets or rotates a secure-tenant password using the out-of-band admin token.
+   */
   app.post("/:tenantId/internal/passwords", (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -95,6 +105,9 @@ export function registerInternalRoutes(app: Express, context: RouteContext): voi
     res.json({ updated: true, tenant_id: tenant.tenantId, user_sub: user.sub });
   });
 
+  /**
+   * Removes a secure-tenant password using the out-of-band admin token.
+   */
   app.delete("/:tenantId/internal/passwords", (req, res) => {
     const config = context.getConfig();
     const tenant = getTenantOr404(config, req, res);
@@ -120,6 +133,9 @@ export function registerInternalRoutes(app: Express, context: RouteContext): voi
   });
 }
 
+/**
+ * Resolves a password-management target by subject or username.
+ */
 function resolvePasswordUser(tenant: MockTenant, body: Record<string, unknown>): MockUser | undefined {
   const userSub = readString(body.user_sub) ?? readString(body.userSub);
   if (userSub) {
@@ -136,6 +152,9 @@ function resolvePasswordUser(tenant: MockTenant, body: Record<string, unknown>):
   );
 }
 
+/**
+ * Verifies the configured internal admin token in a bearer or x-admin-token header.
+ */
 function authorizeAdminRequest(req: Request, adminToken: string | undefined): boolean {
   if (!adminToken) {
     return false;

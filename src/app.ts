@@ -44,6 +44,8 @@ export function createApp({
 }: AppDeps): express.Express {
   const app = express();
   const getConfig = typeof config === "function" ? config : () => config;
+
+  // Route context keeps request handlers independent from process-level startup.
   const routeContext: RouteContext = {
     getConfig,
     keys,
@@ -59,8 +61,11 @@ export function createApp({
   };
 
   app.disable("x-powered-by");
+  // Keep form and JSON bodies bounded because config and login endpoints accept user input.
   app.use(express.urlencoded({ extended: false, limit: "100kb" }));
   app.use(express.json({ limit: "100kb" }));
+
+  // Emit request logs after responses so status and duration are available.
   app.use((req, res, next) => {
     const startedAt = Date.now();
     res.on("finish", () => {

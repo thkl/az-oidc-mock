@@ -15,15 +15,27 @@ type MfaRecord = {
   createdAt: string;
 };
 
+/**
+ * Stores TOTP enrollment records in memory or in the configured mfa.json file.
+ */
 export class MfaStore {
   private readonly memory = new Map<string, MfaRecord>();
 
+  /**
+   * Creates an MFA store backed by mfa.json when a path is provided.
+   */
   constructor(private readonly storePath?: string) {}
 
+  /**
+   * Checks whether a user has a TOTP secret enrolled.
+   */
   isEnrolled(tenantId: string, userSub: string): boolean {
     return Boolean(this.getTotpSecret(tenantId, userSub));
   }
 
+  /**
+   * Creates or replaces the TOTP enrollment for a user.
+   */
   enrollTotp(tenantId: string, userSub: string, secret: string): void {
     const record: MfaRecord = {
       tenantId,
@@ -47,6 +59,9 @@ export class MfaStore {
     this.writeRecords(records);
   }
 
+  /**
+   * Removes a user's TOTP enrollment.
+   */
   remove(tenantId: string, userSub: string): boolean {
     if (!this.storePath) {
       return this.memory.delete(recordKey(tenantId, userSub));
@@ -61,11 +76,17 @@ export class MfaStore {
     return true;
   }
 
+  /**
+   * Verifies a submitted TOTP code against the stored user secret.
+   */
   verifyTotp(tenantId: string, userSub: string, code: string, now = Date.now()): boolean {
     const secret = this.getTotpSecret(tenantId, userSub);
     return secret ? verifyTotpCode(secret, code, now) : false;
   }
 
+  /**
+   * Reads a user's stored TOTP secret from memory or disk.
+   */
   private getTotpSecret(tenantId: string, userSub: string): string | undefined {
     if (!this.storePath) {
       return this.memory.get(recordKey(tenantId, userSub))?.secret;
@@ -74,6 +95,9 @@ export class MfaStore {
     return this.readRecords().find((record) => record.tenantId === tenantId && record.userSub === userSub)?.secret;
   }
 
+  /**
+   * Reads and validates TOTP enrollment records from disk.
+   */
   private readRecords(): MfaRecord[] {
     if (!this.storePath || !fs.existsSync(this.storePath)) {
       return [];
@@ -89,6 +113,9 @@ export class MfaStore {
     }
   }
 
+  /**
+   * Atomically writes TOTP enrollment records to disk.
+   */
   private writeRecords(records: MfaRecord[]): void {
     if (!this.storePath) {
       return;
@@ -102,10 +129,16 @@ export class MfaStore {
   }
 }
 
+/**
+ * Creates a random base32 TOTP secret suitable for authenticator apps.
+ */
 export function createTotpSecret(): string {
   return base32Encode(crypto.randomBytes(20));
 }
 
+/**
+ * Builds an otpauth URI for QR-code or link based TOTP setup.
+ */
 export function createTotpUri(input: {
   issuer: string;
   tenantId: string;
@@ -124,14 +157,23 @@ export function createTotpUri(input: {
   return `otpauth://totp/${encodeURIComponent(label)}?${params.toString()}`;
 }
 
+/**
+ * Creates the expected six-digit code for the current TOTP time step.
+ */
 export function createTotpCode(secret: string, now = Date.now()): string {
   return createTotpCodeForCounter(secret, Math.floor(now / 1000 / TOTP_PERIOD_SECONDS));
 }
 
+/**
+ * Verifies a TOTP code for a raw secret without consulting the store.
+ */
 export function verifyTotpSecret(secret: string, code: string, now = Date.now()): boolean {
   return verifyTotpCode(secret, code, now);
 }
 
+/**
+ * Checks a submitted code against the current time step and adjacent drift window.
+ */
 function verifyTotpCode(secret: string, code: string, now: number): boolean {
   const normalized = code.replace(/\s+/g, "");
   if (!/^\d{6}$/.test(normalized)) {
@@ -147,12 +189,16 @@ function verifyTotpCode(secret: string, code: string, now: number): boolean {
   return false;
 }
 
+/**
+ * Computes the HOTP value used by TOTP for a specific counter.
+ */
 function createTotpCodeForCounter(secret: string, counter: number): string {
   const key = base32Decode(secret);
   const message = Buffer.alloc(8);
   message.writeBigUInt64BE(BigInt(counter));
   const hmac = crypto.createHmac("sha1", key).update(message).digest();
   const offset = hmac[hmac.length - 1] & 0x0f;
+  // Dynamic truncation follows RFC 4226 to convert the HMAC into a short code.
   const value = (
     ((hmac[offset] & 0x7f) << 24) |
     ((hmac[offset + 1] & 0xff) << 16) |
@@ -162,6 +208,9 @@ function createTotpCodeForCounter(secret: string, counter: number): string {
   return String(value).padStart(TOTP_DIGITS, "0");
 }
 
+/**
+ * Encodes binary random secret material into unpadded base32.
+ */
 function base32Encode(buffer: Buffer): string {
   let bits = 0;
   let value = 0;
@@ -180,6 +229,9 @@ function base32Encode(buffer: Buffer): string {
   return output;
 }
 
+/**
+ * Decodes a base32 TOTP secret back into bytes.
+ */
 function base32Decode(value: string): Buffer {
   let bits = 0;
   let decoded = 0;
@@ -199,10 +251,16 @@ function base32Decode(value: string): Buffer {
   return Buffer.from(bytes);
 }
 
+/**
+ * Creates the storage key for a user's MFA record.
+ */
 function recordKey(tenantId: string, userSub: string): string {
   return `${tenantId}:${userSub}`;
 }
 
+/**
+ * Validates untyped JSON before accepting it as an MFA record.
+ */
 function isMfaRecord(value: unknown): value is MfaRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;

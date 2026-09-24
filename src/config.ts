@@ -126,16 +126,21 @@ export function saveConfig(configPath: string, nextConfig: AppConfig): AppConfig
   return parsed;
 }
 
+/**
+ * Normalizes UI-edited config values before validation and persistence.
+ */
 function normalizeConfigForSave(config: AppConfig): AppConfig {
   return {
     ...config,
     tenants: config.tenants.map((tenant) => ({
       ...tenant,
+      // Mandatory modes imply the corresponding optional setup capability.
       twoFactorEnabled: tenant.twoFactorEnabled || tenant.twoFactorMandatory,
       passkeysEnabled: tenant.passkeysEnabled || tenant.passkeysMandatory,
       sharedUsers: tenant.sharedUsers ?? [],
       clients: tenant.clients.map((client) => ({
         ...client,
+        // The admin UI accepts comma, whitespace, or newline separated scope text.
         allowedScopes: client.allowedScopes.flatMap((scope) => scope.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean))
       }))
     }))
@@ -154,6 +159,7 @@ export function watchConfig(
   let lastMtimeMs = fs.statSync(resolved).mtimeMs;
 
   fs.watchFile(resolved, { interval: 500 }, (current, previous) => {
+    // Ignore initialization and duplicate watch events from the same file timestamp.
     if (previous.mtimeMs === 0) {
       lastMtimeMs = current.mtimeMs;
       return;
@@ -164,6 +170,7 @@ export function watchConfig(
     lastMtimeMs = current.mtimeMs;
 
     try {
+      // Only publish a reload after the new file parses and validates successfully.
       onReload(loadConfig(resolved));
     } catch (error) {
       onError(error);
@@ -171,6 +178,9 @@ export function watchConfig(
   });
 
   return {
+    /**
+     * Stops the polling watcher for this config file.
+     */
     close: () => {
       fs.unwatchFile(resolved);
     }
@@ -233,6 +243,7 @@ function readTlsOverride(fallback: AppConfig["tls"]): AppConfig["tls"] {
     return undefined;
   }
 
+  // Environment values layer on top of config-file TLS settings.
   const override = {
     ...(fallback ?? {}),
     ...(keyPath ? { keyPath } : {}),
@@ -267,6 +278,9 @@ function readBooleanOverride(name: string, fallback: boolean): boolean {
   throw new Error(`Invalid ${name} override: ${value}`);
 }
 
+/**
+ * Reads an optional boolean override and leaves it undefined when absent.
+ */
 function readOptionalBooleanOverride(name: string): boolean | undefined {
   const value = process.env[name];
   if (!value) {
@@ -275,9 +289,13 @@ function readOptionalBooleanOverride(name: string): boolean | undefined {
   return readBooleanOverride(name, false);
 }
 
+/**
+ * Validates uniqueness and cross-tenant references that schemas cannot express.
+ */
 function validateConfigUniqueness(config: AppConfig): void {
   const tenantIds = new Set<string>();
   for (const tenant of config.tenants) {
+    // Tenant, client, and device identifiers are addressable by protocol routes.
     if (tenantIds.has(tenant.tenantId)) {
       throw new Error(`Duplicate tenantId in config: ${tenant.tenantId}`);
     }
@@ -300,6 +318,7 @@ function validateConfigUniqueness(config: AppConfig): void {
     }
   }
 
+  // Shared accounts must point at an existing source tenant and user.
   for (const tenant of config.tenants) {
     for (const sharedUser of tenant.sharedUsers ?? []) {
       const homeTenant = config.tenants.find((candidate) => candidate.tenantId === sharedUser.tenantId);

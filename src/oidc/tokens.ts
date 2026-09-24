@@ -23,6 +23,9 @@ const RESERVED_CLAIMS = new Set([
   "client_info"
 ]);
 
+/**
+ * Common input required to issue a mock Azure v2 token pair.
+ */
 export type TokenSetInput = {
   config: AppConfig;
   keys: SigningKeys;
@@ -51,6 +54,8 @@ export type AccessTokenVerification =
 export async function createIdToken(input: TokenSetInput): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const issuer = tenantIssuer(input.config, input.tenant.tenantId);
+
+  // Standard OIDC/Azure claims are written first and cannot be overwritten by config claims.
   const claims: Record<string, unknown> = {
     iss: issuer,
     aud: input.client.clientId,
@@ -84,6 +89,7 @@ export async function createIdToken(input: TokenSetInput): Promise<string> {
 export async function createAccessToken(input: TokenSetInput): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const issuer = tenantIssuer(input.config, input.tenant.tenantId);
+  // Access tokens model Azure's scp claim while keeping configured custom claims additive only.
   return signJwt(
     {
       iss: issuer,
@@ -117,11 +123,13 @@ export async function verifyAccessToken(input: {
   audience?: string;
 }): Promise<AccessTokenVerification> {
   try {
+    // jose validates the signature, issuer, expiry, and optional audience before local checks.
     const { payload } = await jwtVerify(input.token, createLocalJWKSet(input.keys.jwks), {
       issuer: tenantIssuer(input.config, input.tenant.tenantId),
       ...(input.audience ? { audience: input.audience } : {})
     });
 
+    // Local checks keep internal verification responses explicit and Azure-like.
     if (payload.ver !== "2.0") {
       return {
         ok: false,
@@ -170,12 +178,18 @@ function signJwt(claims: Record<string, unknown>, keys: SigningKeys): Promise<st
     .sign(keys.privateKey);
 }
 
+/**
+ * Removes custom claims that would otherwise overwrite protected JWT claims.
+ */
 function customClaims(claims: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(claims).filter(([key]) => !RESERVED_CLAIMS.has(key))
   );
 }
 
+/**
+ * Converts jose verification errors into stable OAuth error descriptions.
+ */
 function describeJwtVerificationError(error: unknown): string {
   if (error instanceof errors.JWTExpired) {
     return "Token is expired";

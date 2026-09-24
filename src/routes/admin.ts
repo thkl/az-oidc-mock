@@ -15,7 +15,13 @@ const ADMIN_ROLE = "internal-admin";
 const ADMIN_CLAIM = "internal_admin";
 const SECRET_MASK = "********";
 
+/**
+ * Registers the authenticated admin web UI and its JSON mutation APIs.
+ */
 export function registerAdminRoutes(app: Express, context: RouteContext): void {
+  /**
+   * Serves the admin UI after validating the internal tenant session.
+   */
   app.get("/internal/admin", (req, res) => {
     const config = context.getConfig();
     const setup = getAdminSetup(config);
@@ -37,6 +43,9 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     res.type("html").send(renderAdminPage(sessionUser));
   });
 
+  /**
+   * Completes the internal OIDC login and creates the admin UI session cookie.
+   */
   app.get("/internal/admin/callback", (req, res) => {
     const config = context.getConfig();
     const setup = getAdminSetup(config);
@@ -71,6 +80,9 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     res.redirect("/internal/admin");
   });
 
+  /**
+   * Returns the editable config with secrets redacted and a CSRF token for writes.
+   */
   app.get("/internal/admin/api/config", (req, res) => {
     const auth = getAdminRequestUser(context.getConfig(), req, context.sessionSecret);
     if (!auth.ok) {
@@ -84,6 +96,9 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     });
   });
 
+  /**
+   * Saves an updated config file from the admin UI.
+   */
   app.put("/internal/admin/api/config", (req, res) => {
     const auth = getAdminRequestUser(context.getConfig(), req, context.sessionSecret);
     if (!auth.ok) {
@@ -102,6 +117,7 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     const body = readObjectBody(req);
     const nextConfig = body.config;
     try {
+      // Preserve stored secrets when the UI submits redacted secret placeholders.
       const saved = saveConfig(context.configPath, mergeMaskedClientSecrets(context.getConfig(), nextConfig as AppConfig));
       context.onConfigSaved?.(saved);
       context.logger.info("admin config saved", { userSub: auth.user.sub, tenantCount: saved.tenants.length });
@@ -114,6 +130,9 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     }
   });
 
+  /**
+   * Sets a user's secure-login password from the admin UI.
+   */
   app.post("/internal/admin/api/passwords", (req, res) => {
     const config = context.getConfig();
     const auth = getAdminRequestUser(config, req, context.sessionSecret);
@@ -156,6 +175,9 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     }
   });
 
+  /**
+   * Resets a user's TOTP enrollment from the admin UI.
+   */
   app.delete("/internal/admin/api/mfa", (req, res) => {
     const config = context.getConfig();
     const auth = getAdminRequestUser(config, req, context.sessionSecret);
@@ -191,6 +213,9 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     res.json({ deleted, tenant_id: tenant.tenantId, user_sub: user.sub });
   });
 
+  /**
+   * Resets all stored passkeys for a user from the admin UI.
+   */
   app.delete("/internal/admin/api/passkeys", (req, res) => {
     const config = context.getConfig();
     const auth = getAdminRequestUser(config, req, context.sessionSecret);
@@ -227,6 +252,9 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
   });
 }
 
+/**
+ * Replaces client secrets with a mask before config is sent to the browser.
+ */
 function redactConfigSecrets(config: AppConfig): AppConfig {
   return {
     ...config,
@@ -240,6 +268,9 @@ function redactConfigSecrets(config: AppConfig): AppConfig {
   };
 }
 
+/**
+ * Rehydrates masked client secrets from the current config before saving UI edits.
+ */
 function mergeMaskedClientSecrets(currentConfig: AppConfig, nextConfig: AppConfig): AppConfig {
   return {
     ...nextConfig,
@@ -249,6 +280,7 @@ function mergeMaskedClientSecrets(currentConfig: AppConfig, nextConfig: AppConfi
         ...tenant,
         clients: tenant.clients.map((client) => {
           const currentClient = currentTenant ? findClient(currentTenant, client.clientId) : undefined;
+          // A missing or masked secret means "keep the existing secret" when one exists.
           if ((client.clientSecret === undefined || client.clientSecret === SECRET_MASK) && currentClient?.clientSecret) {
             return { ...client, clientSecret: currentClient.clientSecret };
           }
@@ -259,6 +291,9 @@ function mergeMaskedClientSecrets(currentConfig: AppConfig, nextConfig: AppConfi
   };
 }
 
+/**
+ * Validates that the internal admin tenant and client are configured correctly.
+ */
 function getAdminSetup(config: AppConfig):
   | { ok: true; tenant: MockTenant; client: MockClient }
   | { ok: false; description: string } {
@@ -284,6 +319,9 @@ function getAdminSetup(config: AppConfig):
   return { ok: true, tenant, client };
 }
 
+/**
+ * Authenticates an admin API request using the internal tenant session cookie.
+ */
 function getAdminRequestUser(
   config: AppConfig,
   req: Request,
@@ -304,14 +342,23 @@ function getAdminRequestUser(
   return { ok: true, user };
 }
 
+/**
+ * Checks whether a user is allowed to administer the mock.
+ */
 function isAdminUser(user: MockUser): boolean {
   return user.roles.includes(ADMIN_ROLE) || user.claims[ADMIN_CLAIM] === true;
 }
 
+/**
+ * Builds the human-readable admin access requirement.
+ */
 function adminAccessDescription(): string {
   return `Admin login requires the "${ADMIN_ROLE}" role or claims.${ADMIN_CLAIM}=true.`;
 }
 
+/**
+ * Creates the admin UI CSRF token bound to the signed-in admin user.
+ */
 function createAdminCsrfToken(user: MockUser, sessionSecret: string): string {
   return crypto
     .createHmac("sha256", sessionSecret)
@@ -319,11 +366,17 @@ function createAdminCsrfToken(user: MockUser, sessionSecret: string): string {
     .digest("base64url");
 }
 
+/**
+ * Verifies the admin UI CSRF token supplied by mutating requests.
+ */
 function verifyAdminCsrfToken(req: Request, user: MockUser, sessionSecret: string): boolean {
   const supplied = readString(req.header("x-csrf-token"));
   return Boolean(supplied && constantTimeEqual(supplied, createAdminCsrfToken(user, sessionSecret)));
 }
 
+/**
+ * Builds the internal tenant authorize URL used to start admin login.
+ */
 function createAdminAuthorizeUrl(config: AppConfig): URL {
   const url = new URL(`${config.baseUrl.replace(/\/$/, "")}/${ADMIN_TENANT_ID}/oauth2/v2.0/authorize`);
   url.searchParams.set("response_type", "code");
@@ -334,10 +387,16 @@ function createAdminAuthorizeUrl(config: AppConfig): URL {
   return url;
 }
 
+/**
+ * Builds the admin callback URI that the internal admin client must allow.
+ */
 function adminRedirectUri(config: AppConfig): string {
   return `${config.baseUrl.replace(/\/$/, "")}/internal/admin/callback`;
 }
 
+/**
+ * Generates a copy-pasteable internal tenant example for setup errors.
+ */
 function createInternalTenantExample(config: AppConfig): string {
   return JSON.stringify({
     tenantId: ADMIN_TENANT_ID,

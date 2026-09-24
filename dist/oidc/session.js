@@ -1,10 +1,16 @@
 import crypto from "node:crypto";
 import { resolveEffectiveUser } from "./users.js";
+/**
+ * Reads and verifies the tenant-scoped login session cookie.
+ */
 export function getSessionUser(req, config, tenant, sessionSecret) {
     const cookie = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
     const userSub = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
     return userSub ? resolveEffectiveUser(config, tenant, userSub)?.user : undefined;
 }
+/**
+ * Issues a signed HTTP-only login session cookie for the tenant.
+ */
 export function setSessionUser(req, res, config, tenant, userSub, sessionSecret) {
     const maxAge = tenant.sessionLifetimeSeconds * 1000;
     res.cookie(`az_oidc_mock_${tenant.tenantId}`, createSessionCookie(tenant.tenantId, userSub, Date.now() + maxAge, sessionSecret), {
@@ -15,6 +21,9 @@ export function setSessionUser(req, res, config, tenant, userSub, sessionSecret)
         maxAge
     });
 }
+/**
+ * Clears the tenant-scoped login session cookie.
+ */
 export function clearSessionUser(req, res, config, tenantId) {
     res.clearCookie(`az_oidc_mock_${tenantId}`, {
         httpOnly: true,
@@ -23,14 +32,23 @@ export function clearSessionUser(req, res, config, tenantId) {
         path: `/${tenantId}`
     });
 }
+/**
+ * Creates the fallback per-process session signing secret.
+ */
 export function createDefaultSessionSecret() {
     return crypto.randomBytes(32).toString("base64url");
 }
+/**
+ * Compares two strings without leaking timing differences for equal-length values.
+ */
 export function constantTimeEqual(actualValue, expectedValue) {
     const actual = Buffer.from(actualValue);
     const expected = Buffer.from(expectedValue);
     return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
+/**
+ * Parses a Cookie header into decoded cookie name/value pairs.
+ */
 function parseCookies(header) {
     if (!header)
         return {};
@@ -40,11 +58,17 @@ function parseCookies(header) {
         .filter(([key, value]) => key && value)
         .map(([key, value]) => [key, decodeURIComponent(value)]));
 }
+/**
+ * Creates the signed cookie payload that stores tenant, subject, and expiry.
+ */
 function createSessionCookie(tenantId, userSub, expiresAt, sessionSecret) {
     const payload = base64UrlJson({ tenantId, userSub, expiresAt });
     const signature = signSessionPayload(payload, sessionSecret);
     return `v1.${payload}.${signature}`;
 }
+/**
+ * Verifies the signed session cookie and returns the user subject when valid.
+ */
 function verifySessionCookie(cookie, tenantId, sessionSecret) {
     const [version, payload, signature] = cookie.split(".");
     if (version !== "v1" || !payload || !signature) {
@@ -54,6 +78,7 @@ function verifySessionCookie(cookie, tenantId, sessionSecret) {
     if (!constantTimeEqual(signature, expected)) {
         return undefined;
     }
+    // The payload is trusted only after the HMAC has been checked.
     const decoded = parseBase64UrlJson(payload);
     if (decoded?.tenantId !== tenantId ||
         typeof decoded.userSub !== "string" ||
@@ -63,16 +88,28 @@ function verifySessionCookie(cookie, tenantId, sessionSecret) {
     }
     return decoded.userSub;
 }
+/**
+ * Signs a session payload with the shared session secret.
+ */
 function signSessionPayload(payload, sessionSecret) {
     return crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
 }
+/**
+ * Decides whether cookies should be marked Secure for direct or proxied HTTPS.
+ */
 function isSecureRequest(req, config) {
     const forwardedProto = req.header("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
     return req.secure || forwardedProto === "https" || new URL(config.baseUrl).protocol === "https:";
 }
+/**
+ * Encodes JSON as URL-safe base64 for cookie payloads.
+ */
 function base64UrlJson(value) {
     return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }
+/**
+ * Decodes a URL-safe base64 JSON object, returning undefined on malformed input.
+ */
 function parseBase64UrlJson(value) {
     try {
         const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));

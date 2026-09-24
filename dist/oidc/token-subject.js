@@ -1,6 +1,9 @@
 import { verifyAccessToken } from "./tokens.js";
 import { resolveEffectiveUser } from "./users.js";
 import { findClient, findDevice } from "./validation.js";
+/**
+ * Verifies an access token and resolves its still-active client, user, and device.
+ */
 export async function resolveActiveTokenSubject(input) {
     const verification = await verifyAccessToken(input);
     if (!verification.ok) {
@@ -9,12 +12,16 @@ export async function resolveActiveTokenSubject(input) {
     const subject = resolveVerifiedTokenSubject(input.config, input.tenant, verification.claims);
     return subject.ok ? subject : { ok: false, error: "invalid_token", description: subject.description };
 }
+/**
+ * Resolves already-verified token claims against the current config state.
+ */
 export function resolveVerifiedTokenSubject(config, tenant, claims) {
     const client = findClient(tenant, String(claims.aud));
     const user = resolveEffectiveUser(config, tenant, String(claims.sub))?.user;
     const device = typeof claims.deviceid === "string"
         ? findDevice(tenant, claims.deviceid)
         : undefined;
+    // Tokens are rejected when the backing client, user, or login device has been disabled.
     if (!client || !client.enabled || !user || isInactiveTokenDevice(tenant, claims.deviceid, device)) {
         return {
             ok: false,
@@ -23,12 +30,18 @@ export function resolveVerifiedTokenSubject(config, tenant, claims) {
     }
     return { ok: true, client, user, ...(device ? { device } : {}) };
 }
+/**
+ * Checks refresh-token device binding against the tenant's active device list.
+ */
 export function isInactiveRefreshTokenDevice(tenant, deviceId, device) {
     if (!deviceId) {
         return tenant.devices.length > 0;
     }
     return !device || !device.enabled;
 }
+/**
+ * Produces the specific reason a token subject is no longer valid.
+ */
 function describeInactiveTokenSubject(tenant, client, user, deviceId, device) {
     if (!client) {
         return "Token audience is not a configured client";
@@ -44,6 +57,9 @@ function describeInactiveTokenSubject(tenant, client, user, deviceId, device) {
     }
     return "Token is no longer active";
 }
+/**
+ * Checks access-token device binding against the tenant's active device list.
+ */
 function isInactiveTokenDevice(tenant, deviceId, device) {
     if (typeof deviceId !== "string") {
         return tenant.devices.length > 0;
