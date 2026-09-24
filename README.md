@@ -143,7 +143,7 @@ Open the built-in admin console at:
 http://localhost:3000/internal/admin
 ```
 
-The admin console uses the mock itself for authentication. Configure a secure tenant named `internal` with a client named `internal-admin`; any successfully signed-in user from that tenant can edit the config.
+The admin console uses the mock itself for authentication. Configure a secure tenant named `internal` with a client named `internal-admin`. The signed-in user must have either the `internal-admin` role or `claims.internal_admin: true`.
 
 ```json
 {
@@ -167,7 +167,8 @@ The admin console uses the mock itself for authentication. Configure a secure te
       "name": "Admin User",
       "email": "admin@example.test",
       "preferred_username": "admin@example.test",
-      "roles": ["Admin"]
+      "roles": [],
+      "claims": { "internal_admin": true }
     }
   ]
 }

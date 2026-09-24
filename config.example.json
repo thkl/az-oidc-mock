@@ -97,7 +97,8 @@
           "name": "Admin User",
           "email": "admin@example.test",
           "preferred_username": "admin@example.test",
-          "roles": ["Admin"]
+          "roles": [],
+          "claims": { "internal_admin": true }
         }
       ]
     }

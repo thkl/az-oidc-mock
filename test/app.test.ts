@@ -221,6 +221,71 @@ describe("Azure OIDC mock", () => {
     expect(api.body.config.tenants[0].clients[0].clientSecret).toBe("********");
   });
 
+  it("allows a shared internal admin user with the internal_admin claim", async () => {
+    const app = createApp({ config: sharedInternalAdminConfig({ claim: true }), keys, logger: silentLogger });
+    const agent = request.agent(app);
+
+    const login = await agent
+      .post("/internal/login")
+      .type("form")
+      .send({
+        response_type: "code",
+        client_id: "internal-admin",
+        redirect_uri: "http://127.0.0.1:3000/internal/admin/callback",
+        scope: "openid profile email",
+        state: "admin",
+        user_sub: "user-1"
+      })
+      .expect(302);
+
+    await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
+    const api = await agent.get("/internal/admin/api/config").expect(200);
+    expect(api.body.user.sub).toBe("user-1");
+  });
+
+  it("allows a shared internal admin user with the internal-admin role", async () => {
+    const app = createApp({ config: sharedInternalAdminConfig({ role: true }), keys, logger: silentLogger });
+    const agent = request.agent(app);
+
+    const login = await agent
+      .post("/internal/login")
+      .type("form")
+      .send({
+        response_type: "code",
+        client_id: "internal-admin",
+        redirect_uri: "http://127.0.0.1:3000/internal/admin/callback",
+        scope: "openid profile email",
+        state: "admin",
+        user_sub: "user-1"
+      })
+      .expect(302);
+
+    await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
+    await agent.get("/internal/admin").expect(200);
+  });
+
+  it("rejects shared internal admin users without the admin role or claim", async () => {
+    const app = createApp({ config: sharedInternalAdminConfig(), keys, logger: silentLogger });
+
+    const login = await request(app)
+      .post("/internal/login")
+      .type("form")
+      .send({
+        response_type: "code",
+        client_id: "internal-admin",
+        redirect_uri: "http://127.0.0.1:3000/internal/admin/callback",
+        scope: "openid profile email",
+        state: "admin",
+        user_sub: "user-1"
+      })
+      .expect(302);
+
+    const callback = await request(app)
+      .get(new URL(login.header.location).pathname + new URL(login.header.location).search)
+      .expect(403);
+    expect(callback.text).toContain("internal_admin");
+  });
+
   it("saves admin UI config changes to the configured config file", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-admin-"));
     try {
@@ -1378,10 +1443,49 @@ function adminConfig(): AppConfig {
             name: "Admin User",
             email: "admin@example.test",
             preferred_username: "admin@example.test",
-            roles: ["Admin"],
-            claims: {}
+            roles: [],
+            claims: { internal_admin: true }
           }
         ]
+      }
+    ]
+  };
+}
+
+function sharedInternalAdminConfig(access: { role?: boolean; claim?: boolean } = {}): AppConfig {
+  return {
+    ...config,
+    tenants: [
+      {
+        ...config.tenants[0],
+        users: config.tenants[0].users.map((user) =>
+          user.sub === "user-1"
+            ? {
+              ...user,
+              roles: access.role ? ["internal-admin"] : [],
+              claims: access.claim ? { ...user.claims, internal_admin: true } : user.claims
+            }
+            : user
+        )
+      },
+      config.tenants[1],
+      {
+        tenantId: "internal",
+        displayName: "Internal Admin",
+        clients: [
+          {
+            clientId: "internal-admin",
+            redirectUris: ["http://127.0.0.1:3000/internal/admin/callback"],
+            allowedScopes: ["openid", "profile", "email"],
+            enabled: true
+          }
+        ],
+        devices: [],
+        secure: false,
+        enableSessions: true,
+        sessionLifetimeSeconds: 8 * 60 * 60,
+        sharedUsers: [{ tenantId: "common", userSub: "user-1" }],
+        users: []
       }
     ]
   };

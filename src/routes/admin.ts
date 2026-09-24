@@ -2,6 +2,7 @@ import type { Express, Request } from "express";
 import type { AppConfig, MockClient, MockTenant, MockUser } from "../config.js";
 import { saveConfig } from "../config.js";
 import { getSessionUser, setSessionUser } from "../oidc/session.js";
+import { resolveEffectiveUser } from "../oidc/users.js";
 import { findClient, findTenant, findUser, validateRedirectUri, validateScopes } from "../oidc/validation.js";
 import { renderAdminPage, renderAdminSetupPage } from "../views/admin.js";
 import { readObjectBody, readString } from "./http.js";
@@ -9,6 +10,8 @@ import type { RouteContext } from "./types.js";
 
 const ADMIN_TENANT_ID = "internal";
 const ADMIN_CLIENT_ID = "internal-admin";
+const ADMIN_ROLE = "internal-admin";
+const ADMIN_CLAIM = "internal_admin";
 const SECRET_MASK = "********";
 
 export function registerAdminRoutes(app: Express, context: RouteContext): void {
@@ -23,6 +26,10 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     const sessionUser = getSessionUser(req, config, setup.tenant, context.sessionSecret);
     if (!sessionUser) {
       res.redirect(createAdminAuthorizeUrl(config).toString());
+      return;
+    }
+    if (!isAdminUser(sessionUser)) {
+      res.status(403).type("html").send(renderAdminSetupPage(adminAccessDescription(), createInternalTenantExample(config)));
       return;
     }
 
@@ -49,13 +56,17 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
-    const user = findUser(setup.tenant, entry.userSub);
-    if (!user) {
+    const resolvedUser = resolveEffectiveUser(config, setup.tenant, entry.userSub);
+    if (!resolvedUser) {
       res.status(401).type("html").send(renderAdminSetupPage("Admin login user no longer exists.", createInternalTenantExample(config)));
       return;
     }
+    if (!isAdminUser(resolvedUser.user)) {
+      res.status(403).type("html").send(renderAdminSetupPage(adminAccessDescription(), createInternalTenantExample(config)));
+      return;
+    }
 
-    setSessionUser(res, setup.tenant, user.sub, context.sessionSecret);
+    setSessionUser(res, setup.tenant, resolvedUser.user.sub, context.sessionSecret);
     res.redirect("/internal/admin");
   });
 
@@ -238,7 +249,18 @@ function getAdminRequestUser(
   if (!user) {
     return { ok: false, status: 401, error: "login_required", description: "Sign in with the internal tenant first" };
   }
+  if (!isAdminUser(user)) {
+    return { ok: false, status: 403, error: "forbidden", description: adminAccessDescription() };
+  }
   return { ok: true, user };
+}
+
+function isAdminUser(user: MockUser): boolean {
+  return user.roles.includes(ADMIN_ROLE) || user.claims[ADMIN_CLAIM] === true;
+}
+
+function adminAccessDescription(): string {
+  return `Admin login requires the "${ADMIN_ROLE}" role or claims.${ADMIN_CLAIM}=true.`;
 }
 
 function createAdminAuthorizeUrl(config: AppConfig): URL {
@@ -279,8 +301,8 @@ function createInternalTenantExample(config: AppConfig): string {
         name: "Admin User",
         email: "admin@example.test",
         preferred_username: "admin@example.test",
-        roles: ["Admin"],
-        claims: {}
+        roles: [],
+        claims: { [ADMIN_CLAIM]: true }
       }
     ]
   }, null, 2);

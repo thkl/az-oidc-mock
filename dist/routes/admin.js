@@ -1,10 +1,13 @@
 import { saveConfig } from "../config.js";
 import { getSessionUser, setSessionUser } from "../oidc/session.js";
+import { resolveEffectiveUser } from "../oidc/users.js";
 import { findClient, findTenant, findUser, validateRedirectUri, validateScopes } from "../oidc/validation.js";
 import { renderAdminPage, renderAdminSetupPage } from "../views/admin.js";
 import { readObjectBody, readString } from "./http.js";
 const ADMIN_TENANT_ID = "internal";
 const ADMIN_CLIENT_ID = "internal-admin";
+const ADMIN_ROLE = "internal-admin";
+const ADMIN_CLAIM = "internal_admin";
 const SECRET_MASK = "********";
 export function registerAdminRoutes(app, context) {
     app.get("/internal/admin", (req, res) => {
@@ -17,6 +20,10 @@ export function registerAdminRoutes(app, context) {
         const sessionUser = getSessionUser(req, config, setup.tenant, context.sessionSecret);
         if (!sessionUser) {
             res.redirect(createAdminAuthorizeUrl(config).toString());
+            return;
+        }
+        if (!isAdminUser(sessionUser)) {
+            res.status(403).type("html").send(renderAdminSetupPage(adminAccessDescription(), createInternalTenantExample(config)));
             return;
         }
         res.type("html").send(renderAdminPage(sessionUser));
@@ -37,12 +44,16 @@ export function registerAdminRoutes(app, context) {
             res.status(401).type("html").send(renderAdminSetupPage("Admin login code is invalid or expired.", createInternalTenantExample(config)));
             return;
         }
-        const user = findUser(setup.tenant, entry.userSub);
-        if (!user) {
+        const resolvedUser = resolveEffectiveUser(config, setup.tenant, entry.userSub);
+        if (!resolvedUser) {
             res.status(401).type("html").send(renderAdminSetupPage("Admin login user no longer exists.", createInternalTenantExample(config)));
             return;
         }
-        setSessionUser(res, setup.tenant, user.sub, context.sessionSecret);
+        if (!isAdminUser(resolvedUser.user)) {
+            res.status(403).type("html").send(renderAdminSetupPage(adminAccessDescription(), createInternalTenantExample(config)));
+            return;
+        }
+        setSessionUser(res, setup.tenant, resolvedUser.user.sub, context.sessionSecret);
         res.redirect("/internal/admin");
     });
     app.get("/internal/admin/api/config", (req, res) => {
@@ -205,7 +216,16 @@ function getAdminRequestUser(config, req, sessionSecret) {
     if (!user) {
         return { ok: false, status: 401, error: "login_required", description: "Sign in with the internal tenant first" };
     }
+    if (!isAdminUser(user)) {
+        return { ok: false, status: 403, error: "forbidden", description: adminAccessDescription() };
+    }
     return { ok: true, user };
+}
+function isAdminUser(user) {
+    return user.roles.includes(ADMIN_ROLE) || user.claims[ADMIN_CLAIM] === true;
+}
+function adminAccessDescription() {
+    return `Admin login requires the "${ADMIN_ROLE}" role or claims.${ADMIN_CLAIM}=true.`;
 }
 function createAdminAuthorizeUrl(config) {
     const url = new URL(`${config.baseUrl.replace(/\/$/, "")}/${ADMIN_TENANT_ID}/oauth2/v2.0/authorize`);
@@ -243,8 +263,8 @@ function createInternalTenantExample(config) {
                 name: "Admin User",
                 email: "admin@example.test",
                 preferred_username: "admin@example.test",
-                roles: ["Admin"],
-                claims: {}
+                roles: [],
+                claims: { [ADMIN_CLAIM]: true }
             }
         ]
     }, null, 2);
