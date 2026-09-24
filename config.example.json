@@ -69,6 +69,31 @@
           "roles": ["User"]
         }
       ]
+    },
+    {
+      "tenantId": "internal",
+      "displayName": "Internal Admin",
+      "secure": true,
+      "enableSessions": true,
+      "sessionLifetimeSeconds": 28800,
+      "clients": [
+        {
+          "clientId": "internal-admin",
+          "redirectUris": ["http://localhost:3000/internal/admin/callback"],
+          "allowedScopes": ["openid", "profile", "email"],
+          "enabled": true
+        }
+      ],
+      "devices": [],
+      "users": [
+        {
+          "sub": "admin-1",
+          "name": "Admin User",
+          "email": "admin@example.test",
+          "preferred_username": "admin@example.test",
+          "roles": ["Admin"]
+        }
+      ]
     }
   ]
 }

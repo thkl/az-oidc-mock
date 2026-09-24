@@ -17,7 +17,19 @@ const keys = await createSigningKeys();
 const logger = createLogger();
 const state = new OidcState(refreshTokenStorePath);
 const passwordStore = new PasswordStore(passwdPath);
-const app = createApp({ config: () => config, keys, logger, state, passwordStore, adminToken, sessionSecret });
+const app = createApp({
+    config: () => config,
+    keys,
+    logger,
+    state,
+    passwordStore,
+    adminToken,
+    sessionSecret,
+    configPath,
+    onConfigSaved: (saved) => {
+        config = saved;
+    }
+});
 watchConfig(configPath, (reloaded) => {
     config = reloaded;
     logger.info("config reloaded", {

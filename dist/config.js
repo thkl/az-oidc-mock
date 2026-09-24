@@ -62,33 +62,20 @@ const appConfigSchema = z.object({
     tenants: z.array(tenantSchema).min(1)
 });
 /**
+ * Validates raw config data and checks cross-record uniqueness constraints.
+ */
+export function parseConfig(raw) {
+    const parsed = appConfigSchema.parse(raw);
+    validateConfigUniqueness(parsed);
+    return parsed;
+}
+/**
  * Loads, validates, and normalizes the JSON configuration file.
  */
 export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json") {
     const resolved = path.resolve(configPath);
     const raw = fs.readFileSync(resolved, "utf8");
-    const parsed = appConfigSchema.parse(JSON.parse(raw));
-    const tenantIds = new Set();
-    for (const tenant of parsed.tenants) {
-        if (tenantIds.has(tenant.tenantId)) {
-            throw new Error(`Duplicate tenantId in config: ${tenant.tenantId}`);
-        }
-        tenantIds.add(tenant.tenantId);
-        const clientIds = new Set();
-        for (const client of tenant.clients) {
-            if (clientIds.has(client.clientId)) {
-                throw new Error(`Duplicate clientId "${client.clientId}" in tenant "${tenant.tenantId}"`);
-            }
-            clientIds.add(client.clientId);
-        }
-        const deviceIds = new Set();
-        for (const device of tenant.devices) {
-            if (deviceIds.has(device.deviceId)) {
-                throw new Error(`Duplicate deviceId "${device.deviceId}" in tenant "${tenant.tenantId}"`);
-            }
-            deviceIds.add(device.deviceId);
-        }
-    }
+    const parsed = parseConfig(JSON.parse(raw));
     return {
         ...parsed,
         port: readPortOverride(parsed.port),
@@ -96,6 +83,17 @@ export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"
         tls: readTlsOverride(parsed.tls),
         verbose: readBooleanOverride("OIDC_MOCK_VERBOSE", parsed.verbose)
     };
+}
+/**
+ * Writes a validated configuration file atomically.
+ */
+export function saveConfig(configPath, nextConfig) {
+    const parsed = parseConfig(nextConfig);
+    const resolved = path.resolve(configPath);
+    const tmpPath = `${resolved}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+    fs.renameSync(tmpPath, resolved);
+    return parsed;
 }
 /**
  * Watches the configuration file and emits only successfully parsed configs.
@@ -213,4 +211,27 @@ function readOptionalBooleanOverride(name) {
         return undefined;
     }
     return readBooleanOverride(name, false);
+}
+function validateConfigUniqueness(config) {
+    const tenantIds = new Set();
+    for (const tenant of config.tenants) {
+        if (tenantIds.has(tenant.tenantId)) {
+            throw new Error(`Duplicate tenantId in config: ${tenant.tenantId}`);
+        }
+        tenantIds.add(tenant.tenantId);
+        const clientIds = new Set();
+        for (const client of tenant.clients) {
+            if (clientIds.has(client.clientId)) {
+                throw new Error(`Duplicate clientId "${client.clientId}" in tenant "${tenant.tenantId}"`);
+            }
+            clientIds.add(client.clientId);
+        }
+        const deviceIds = new Set();
+        for (const device of tenant.devices) {
+            if (deviceIds.has(device.deviceId)) {
+                throw new Error(`Duplicate deviceId "${device.deviceId}" in tenant "${tenant.tenantId}"`);
+            }
+            deviceIds.add(device.deviceId);
+        }
+    }
 }

@@ -123,6 +123,7 @@ GET  http://localhost:3000/common/oauth2/v2.0/authorize
 POST http://localhost:3000/common/oauth2/v2.0/token
 GET  http://localhost:3000/common/oauth2/v2.0/logout
 POST http://localhost:3000/common/internal/token/verify
+GET  http://localhost:3000/internal/admin
 ```
 
 The issuer is:
@@ -132,6 +133,55 @@ http://localhost:3000/common/v2.0
 ```
 
 For MSAL, use `http://localhost:3000/common` as the authority when the library appends the v2.0 discovery path itself. For non-Azure custom-authority mode, configure MSAL with the local authority as known/trusted according to the MSAL client you use.
+
+## Admin UI
+
+Open the built-in admin console at:
+
+```text
+http://localhost:3000/internal/admin
+```
+
+The admin console uses the mock itself for authentication. Configure a secure tenant named `internal` with a client named `internal-admin`; any successfully signed-in user from that tenant can edit the config.
+
+```json
+{
+  "tenantId": "internal",
+  "displayName": "Internal Admin",
+  "secure": true,
+  "enableSessions": true,
+  "sessionLifetimeSeconds": 28800,
+  "clients": [
+    {
+      "clientId": "internal-admin",
+      "redirectUris": ["http://localhost:3000/internal/admin/callback"],
+      "allowedScopes": ["openid", "profile", "email"],
+      "enabled": true
+    }
+  ],
+  "devices": [],
+  "users": [
+    {
+      "sub": "admin-1",
+      "name": "Admin User",
+      "email": "admin@example.test",
+      "preferred_username": "admin@example.test",
+      "roles": ["Admin"]
+    }
+  ]
+}
+```
+
+Set the initial password for the internal admin user through the password endpoint:
+
+```bash
+curl -sS -X POST http://localhost:3000/internal/internal/passwords \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer change-this-admin-token' \
+  -d '{"username":"admin@example.test","password":"change-me"}'
+```
+
+The admin UI is a Vue 3 page loaded from the public Vue CDN and writes changes back to the active `config.json`. It currently edits tenants, clients, users, tenant session settings, and device JSON.
 
 ## Authorization Code Flow
 

@@ -160,6 +160,103 @@ describe("Azure OIDC mock", () => {
     expect(res.body.issuer).toBe("http://changed.test/newtenant/v2.0");
   });
 
+  it("shows admin setup instructions until the internal tenant is configured", async () => {
+    const app = createApp({ config, keys, logger: silentLogger });
+
+    const res = await request(app).get("/internal/admin").expect(503);
+
+    expect(res.text).toContain("Admin UI is not configured");
+    expect(res.text).toContain("&quot;tenantId&quot;: &quot;internal&quot;");
+    expect(res.text).toContain("&quot;clientId&quot;: &quot;internal-admin&quot;");
+  });
+
+  it("requires internal tenant login before showing the admin UI", async () => {
+    const app = createApp({ config: adminConfig(), keys, logger: silentLogger });
+
+    const res = await request(app).get("/internal/admin").expect(302);
+    const redirect = new URL(res.header.location);
+
+    expect(redirect.pathname).toBe("/internal/oauth2/v2.0/authorize");
+    expect(redirect.searchParams.get("client_id")).toBe("internal-admin");
+    expect(redirect.searchParams.get("redirect_uri")).toBe("http://127.0.0.1:3000/internal/admin/callback");
+  });
+
+  it("serves the Vue admin UI after internal tenant login", async () => {
+    const app = createApp({ config: adminConfig(), keys, logger: silentLogger });
+    const agent = request.agent(app);
+
+    const login = await agent
+      .post("/internal/login")
+      .type("form")
+      .send({
+        response_type: "code",
+        client_id: "internal-admin",
+        redirect_uri: "http://127.0.0.1:3000/internal/admin/callback",
+        scope: "openid profile email",
+        state: "admin",
+        user_sub: "admin-1"
+      })
+      .expect(302);
+
+    await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
+
+    const page = await agent.get("/internal/admin").expect(200);
+    expect(page.text).toContain("https://unpkg.com/vue@3");
+    expect(page.text).toContain("OIDC Admin");
+
+    const api = await agent.get("/internal/admin/api/config").expect(200);
+    expect(api.body.user.sub).toBe("admin-1");
+    expect(api.body.config.tenants.some((tenant: { tenantId: string }) => tenant.tenantId === "internal")).toBe(true);
+  });
+
+  it("saves admin UI config changes to the configured config file", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-admin-"));
+    try {
+      const configPath = path.join(dir, "config.json");
+      await fs.writeFile(configPath, `${JSON.stringify(adminConfig(), null, 2)}\n`, "utf8");
+
+      let currentConfig = adminConfig();
+      const app = createApp({
+        config: () => currentConfig,
+        keys,
+        logger: silentLogger,
+        configPath,
+        onConfigSaved: (saved) => {
+          currentConfig = saved;
+        }
+      });
+      const agent = request.agent(app);
+
+      const login = await agent
+        .post("/internal/login")
+        .type("form")
+        .send({
+          response_type: "code",
+          client_id: "internal-admin",
+          redirect_uri: "http://127.0.0.1:3000/internal/admin/callback",
+          scope: "openid profile email",
+          state: "admin",
+          user_sub: "admin-1"
+        })
+        .expect(302);
+      await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
+
+      const nextConfig = {
+        ...currentConfig,
+        tenants: currentConfig.tenants.map((tenant) =>
+          tenant.tenantId === "common" ? { ...tenant, displayName: "Updated Tenant" } : tenant
+        )
+      };
+      await agent.put("/internal/admin/api/config").send({ config: nextConfig }).expect(200);
+
+      expect(currentConfig.tenants.find((tenant) => tenant.tenantId === "common")?.displayName).toBe("Updated Tenant");
+      const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as AppConfig;
+      expect(saved.tenants.find((tenant) => tenant.tenantId === "common")?.displayName).toBe("Updated Tenant");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects clients from another tenant", async () => {
     const app = createApp({ config, keys, logger: silentLogger });
 
@@ -822,6 +919,41 @@ function secureConfig(overrides: Partial<AppConfig["tenants"][number]> = {}): Ap
         ...overrides
       },
       config.tenants[1]
+    ]
+  };
+}
+
+function adminConfig(): AppConfig {
+  return {
+    ...config,
+    tenants: [
+      ...config.tenants,
+      {
+        tenantId: "internal",
+        displayName: "Internal Admin",
+        clients: [
+          {
+            clientId: "internal-admin",
+            redirectUris: ["http://127.0.0.1:3000/internal/admin/callback"],
+            allowedScopes: ["openid", "profile", "email"],
+            enabled: true
+          }
+        ],
+        devices: [],
+        secure: false,
+        enableSessions: true,
+        sessionLifetimeSeconds: 8 * 60 * 60,
+        users: [
+          {
+            sub: "admin-1",
+            name: "Admin User",
+            email: "admin@example.test",
+            preferred_username: "admin@example.test",
+            roles: ["Admin"],
+            claims: {}
+          }
+        ]
+      }
     ]
   };
 }

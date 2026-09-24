@@ -1,6 +1,7 @@
 import express, { type Request, type Response } from "express";
 import crypto from "node:crypto";
 import type { AppConfig, MockClient, MockTenant, MockUser } from "./config.js";
+import { saveConfig } from "./config.js";
 import { tenantIssuer } from "./config.js";
 import { createLogger, type Logger } from "./logger.js";
 import type { SigningKeys } from "./oidc/keys.js";
@@ -16,7 +17,11 @@ import {
   validateRedirectUri,
   validateScopes
 } from "./oidc/validation.js";
+import { renderAdminPage, renderAdminSetupPage } from "./views/admin.js";
 import { renderLoginPage } from "./views/login.js";
+
+const ADMIN_TENANT_ID = "internal";
+const ADMIN_CLIENT_ID = "internal-admin";
 
 type AppDeps = {
   config: AppConfig | (() => AppConfig);
@@ -26,6 +31,8 @@ type AppDeps = {
   passwordStore?: PasswordStore;
   adminToken?: string;
   sessionSecret?: string;
+  configPath?: string;
+  onConfigSaved?: (config: AppConfig) => void;
 };
 
 type AuthorizeQuery = {
@@ -49,7 +56,9 @@ export function createApp({
   state = new OidcState(),
   passwordStore = new PasswordStore(),
   adminToken,
-  sessionSecret = createDefaultSessionSecret(keys)
+  sessionSecret = createDefaultSessionSecret(keys),
+  configPath,
+  onConfigSaved
 }: AppDeps): express.Express {
   const app = express();
   const getConfig = typeof config === "function" ? config : () => config;
@@ -71,6 +80,88 @@ export function createApp({
 
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
+  });
+
+  app.get("/internal/admin", (req, res) => {
+    const config = getConfig();
+    const setup = getAdminSetup(config);
+    if (!setup.ok) {
+      res.status(503).type("html").send(renderAdminSetupPage(setup.description, createInternalTenantExample(config)));
+      return;
+    }
+
+    const sessionUser = getSessionUser(req, setup.tenant, sessionSecret);
+    if (!sessionUser) {
+      res.redirect(createAdminAuthorizeUrl(config).toString());
+      return;
+    }
+
+    res.type("html").send(renderAdminPage(sessionUser));
+  });
+
+  app.get("/internal/admin/callback", (req, res) => {
+    const config = getConfig();
+    const setup = getAdminSetup(config);
+    if (!setup.ok) {
+      res.status(503).type("html").send(renderAdminSetupPage(setup.description, createInternalTenantExample(config)));
+      return;
+    }
+
+    const code = readString(req.query.code);
+    const entry = code ? state.consumeCode(code) : undefined;
+    if (
+      !entry ||
+      entry.tenantId !== ADMIN_TENANT_ID ||
+      entry.clientId !== ADMIN_CLIENT_ID ||
+      entry.redirectUri !== adminRedirectUri(config)
+    ) {
+      res.status(401).type("html").send(renderAdminSetupPage("Admin login code is invalid or expired.", createInternalTenantExample(config)));
+      return;
+    }
+
+    const user = findUser(setup.tenant, entry.userSub);
+    if (!user) {
+      res.status(401).type("html").send(renderAdminSetupPage("Admin login user no longer exists.", createInternalTenantExample(config)));
+      return;
+    }
+
+    setSessionUser(res, setup.tenant, user.sub, sessionSecret);
+    res.redirect("/internal/admin");
+  });
+
+  app.get("/internal/admin/api/config", (req, res) => {
+    const auth = getAdminRequestUser(getConfig(), req, sessionSecret);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+      return;
+    }
+    res.json({ config: getConfig(), user: { sub: auth.user.sub, name: auth.user.name, email: auth.user.email } });
+  });
+
+  app.put("/internal/admin/api/config", (req, res) => {
+    const auth = getAdminRequestUser(getConfig(), req, sessionSecret);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+      return;
+    }
+    if (!configPath) {
+      res.status(503).json({ error: "admin_config_readonly", error_description: "Config path is not available for writes" });
+      return;
+    }
+
+    const body = readObjectBody(req);
+    const nextConfig = body.config;
+    try {
+      const saved = saveConfig(configPath, nextConfig as AppConfig);
+      onConfigSaved?.(saved);
+      logger.info("admin config saved", { userSub: auth.user.sub, tenantCount: saved.tenants.length });
+      res.json({ config: saved });
+    } catch (error) {
+      res.status(400).json({
+        error: "invalid_config",
+        error_description: error instanceof Error ? error.message : String(error)
+      });
+    }
   });
 
   app.get(["/:tenantId/.well-known/openid-configuration", "/:tenantId/v2.0/.well-known/openid-configuration"], (req, res) => {
@@ -428,6 +519,91 @@ function getTenantOr404(config: AppConfig, req: Request, res: Response): MockTen
     res.status(404).json({ error: "tenant_not_found" });
   }
   return tenant;
+}
+
+function getAdminSetup(config: AppConfig):
+  | { ok: true; tenant: MockTenant; client: MockClient }
+  | { ok: false; description: string } {
+  const tenant = findTenant(config, ADMIN_TENANT_ID);
+  if (!tenant) {
+    return { ok: false, description: `Tenant "${ADMIN_TENANT_ID}" is required for the admin UI.` };
+  }
+
+  const client = findClient(tenant, ADMIN_CLIENT_ID);
+  if (!client) {
+    return { ok: false, description: `Client "${ADMIN_CLIENT_ID}" is required in tenant "${ADMIN_TENANT_ID}".` };
+  }
+  if (!client.enabled) {
+    return { ok: false, description: `Client "${ADMIN_CLIENT_ID}" is disabled.` };
+  }
+  if (!validateRedirectUri(client, adminRedirectUri(config))) {
+    return { ok: false, description: `Client "${ADMIN_CLIENT_ID}" must allow redirect URI "${adminRedirectUri(config)}".` };
+  }
+  if (!validateScopes(client, ["openid", "profile", "email"])) {
+    return { ok: false, description: `Client "${ADMIN_CLIENT_ID}" must allow openid, profile, and email scopes.` };
+  }
+
+  return { ok: true, tenant, client };
+}
+
+function getAdminRequestUser(
+  config: AppConfig,
+  req: Request,
+  sessionSecret: string
+): { ok: true; user: MockUser } | { ok: false; status: number; error: string; description: string } {
+  const setup = getAdminSetup(config);
+  if (!setup.ok) {
+    return { ok: false, status: 503, error: "admin_not_configured", description: setup.description };
+  }
+
+  const user = getSessionUser(req, setup.tenant, sessionSecret);
+  if (!user) {
+    return { ok: false, status: 401, error: "login_required", description: "Sign in with the internal tenant first" };
+  }
+  return { ok: true, user };
+}
+
+function createAdminAuthorizeUrl(config: AppConfig): URL {
+  const url = new URL(`${config.baseUrl.replace(/\/$/, "")}/${ADMIN_TENANT_ID}/oauth2/v2.0/authorize`);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("client_id", ADMIN_CLIENT_ID);
+  url.searchParams.set("redirect_uri", adminRedirectUri(config));
+  url.searchParams.set("scope", "openid profile email");
+  url.searchParams.set("state", "admin");
+  return url;
+}
+
+function adminRedirectUri(config: AppConfig): string {
+  return `${config.baseUrl.replace(/\/$/, "")}/internal/admin/callback`;
+}
+
+function createInternalTenantExample(config: AppConfig): string {
+  return JSON.stringify({
+    tenantId: ADMIN_TENANT_ID,
+    displayName: "Internal Admin",
+    secure: true,
+    enableSessions: true,
+    sessionLifetimeSeconds: 28800,
+    clients: [
+      {
+        clientId: ADMIN_CLIENT_ID,
+        redirectUris: [adminRedirectUri(config)],
+        allowedScopes: ["openid", "profile", "email"],
+        enabled: true
+      }
+    ],
+    devices: [],
+    users: [
+      {
+        sub: "admin-1",
+        name: "Admin User",
+        email: "admin@example.test",
+        preferred_username: "admin@example.test",
+        roles: ["Admin"],
+        claims: {}
+      }
+    ]
+  }, null, 2);
 }
 
 /**

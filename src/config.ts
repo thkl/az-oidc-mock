@@ -79,36 +79,21 @@ export type ConfigWatcher = {
 };
 
 /**
+ * Validates raw config data and checks cross-record uniqueness constraints.
+ */
+export function parseConfig(raw: unknown): AppConfig {
+  const parsed = appConfigSchema.parse(raw);
+  validateConfigUniqueness(parsed);
+  return parsed;
+}
+
+/**
  * Loads, validates, and normalizes the JSON configuration file.
  */
 export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"): AppConfig {
   const resolved = path.resolve(configPath);
   const raw = fs.readFileSync(resolved, "utf8");
-  const parsed = appConfigSchema.parse(JSON.parse(raw));
-
-  const tenantIds = new Set<string>();
-  for (const tenant of parsed.tenants) {
-    if (tenantIds.has(tenant.tenantId)) {
-      throw new Error(`Duplicate tenantId in config: ${tenant.tenantId}`);
-    }
-    tenantIds.add(tenant.tenantId);
-
-    const clientIds = new Set<string>();
-    for (const client of tenant.clients) {
-      if (clientIds.has(client.clientId)) {
-        throw new Error(`Duplicate clientId "${client.clientId}" in tenant "${tenant.tenantId}"`);
-      }
-      clientIds.add(client.clientId);
-    }
-
-    const deviceIds = new Set<string>();
-    for (const device of tenant.devices) {
-      if (deviceIds.has(device.deviceId)) {
-        throw new Error(`Duplicate deviceId "${device.deviceId}" in tenant "${tenant.tenantId}"`);
-      }
-      deviceIds.add(device.deviceId);
-    }
-  }
+  const parsed = parseConfig(JSON.parse(raw));
 
   return {
     ...parsed,
@@ -117,6 +102,18 @@ export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"
     tls: readTlsOverride(parsed.tls),
     verbose: readBooleanOverride("OIDC_MOCK_VERBOSE", parsed.verbose)
   };
+}
+
+/**
+ * Writes a validated configuration file atomically.
+ */
+export function saveConfig(configPath: string, nextConfig: AppConfig): AppConfig {
+  const parsed = parseConfig(nextConfig);
+  const resolved = path.resolve(configPath);
+  const tmpPath = `${resolved}.${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+  fs.renameSync(tmpPath, resolved);
+  return parsed;
 }
 
 /**
@@ -250,4 +247,30 @@ function readOptionalBooleanOverride(name: string): boolean | undefined {
     return undefined;
   }
   return readBooleanOverride(name, false);
+}
+
+function validateConfigUniqueness(config: AppConfig): void {
+  const tenantIds = new Set<string>();
+  for (const tenant of config.tenants) {
+    if (tenantIds.has(tenant.tenantId)) {
+      throw new Error(`Duplicate tenantId in config: ${tenant.tenantId}`);
+    }
+    tenantIds.add(tenant.tenantId);
+
+    const clientIds = new Set<string>();
+    for (const client of tenant.clients) {
+      if (clientIds.has(client.clientId)) {
+        throw new Error(`Duplicate clientId "${client.clientId}" in tenant "${tenant.tenantId}"`);
+      }
+      clientIds.add(client.clientId);
+    }
+
+    const deviceIds = new Set<string>();
+    for (const device of tenant.devices) {
+      if (deviceIds.has(device.deviceId)) {
+        throw new Error(`Duplicate deviceId "${device.deviceId}" in tenant "${tenant.tenantId}"`);
+      }
+      deviceIds.add(device.deviceId);
+    }
+  }
 }
