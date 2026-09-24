@@ -239,7 +239,9 @@ describe("Azure OIDC mock", () => {
         .type("form")
         .send({ ...authorizeQuery(), username: "alice@example.test", password: "correct horse battery staple" })
         .expect(302);
-      expect(login.header["set-cookie"]?.join("\n")).toContain("az_oidc_mock_common=");
+      const setCookie = login.header["set-cookie"]?.join("\n");
+      expect(setCookie).toContain("az_oidc_mock_common=");
+      expect(setCookie).not.toContain("user-1");
 
       const silentLogin = await agent
         .get("/common/oauth2/v2.0/authorize")
@@ -248,6 +250,52 @@ describe("Azure OIDC mock", () => {
       const callback = new URL(silentLogin.header.location);
       expect(callback.searchParams.get("code")).toBeTruthy();
       expect(callback.searchParams.get("state")).toBe("state-2");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects forged or tampered session cookies", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passwd-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      const app = createApp({
+        config: secureConfig(),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath),
+        sessionSecret: "test-session-secret"
+      });
+
+      const forged = await request(app)
+        .get("/common/oauth2/v2.0/authorize")
+        .set("cookie", "az_oidc_mock_common=user-1")
+        .query(authorizeQuery())
+        .expect(200);
+      expect(forged.text).toContain('name="password"');
+
+      const login = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(302);
+      const signedCookie = login.header["set-cookie"]?.[0].split(";")[0];
+      expect(signedCookie).toBeTruthy();
+
+      const tampered = signedCookie!.replace(/.$/, signedCookie!.endsWith("a") ? "b" : "a");
+      const tamperedLogin = await request(app)
+        .get("/common/oauth2/v2.0/authorize")
+        .set("cookie", tampered)
+        .query(authorizeQuery())
+        .expect(200);
+      expect(tamperedLogin.text).toContain('name="password"');
+
+      await request(app)
+        .get("/common/oauth2/v2.0/authorize")
+        .set("cookie", signedCookie!)
+        .query(authorizeQuery())
+        .expect(302);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

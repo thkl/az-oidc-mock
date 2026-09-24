@@ -236,6 +236,14 @@ common:00000000-0000-0000-0000-000000000001:PASTE_HASH_HERE
 
 When `"enableSessions": true`, a successful login stores a tenant-scoped HTTP-only cookie so the next authorize request can proceed without entering the password again. `GET /{tenantId}/oauth2/v2.0/logout` clears that cookie. Set `"enableSessions": false` to require the password for every interactive login.
 
+Session cookies are signed. Set `OIDC_MOCK_SESSION_SECRET` to a strong shared value in Docker Swarm or any multi-replica deployment:
+
+```bash
+OIDC_MOCK_SESSION_SECRET='change-this-long-random-session-secret'
+```
+
+If the variable is omitted, the mock derives a per-process secret. That is fine for one local process, but browser SSO cookies stop working after restart and may fail between replicas.
+
 For Docker Swarm or other deployments where the config directory is mounted into the service, set an admin token:
 
 ```bash

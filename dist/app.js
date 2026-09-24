@@ -10,7 +10,7 @@ import { renderLoginPage } from "./views/login.js";
 /**
  * Creates the Express application and wires all tenant-aware OIDC routes.
  */
-export function createApp({ config, keys, logger = createLogger(), state = new OidcState(), passwordStore = new PasswordStore(), adminToken }) {
+export function createApp({ config, keys, logger = createLogger(), state = new OidcState(), passwordStore = new PasswordStore(), adminToken, sessionSecret = createDefaultSessionSecret(keys) }) {
     const app = express();
     const getConfig = typeof config === "function" ? config : () => config;
     app.disable("x-powered-by");
@@ -70,7 +70,7 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
             return;
         }
         if (enableSessions === true) {
-            const sessionUser = getSessionUser(req, tenant);
+            const sessionUser = getSessionUser(req, tenant, sessionSecret);
             if (sessionUser) {
                 logger.verbose(config, "authorize request satisfied from existing session", {
                     tenantId: tenant.tenantId,
@@ -134,7 +134,7 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
             return;
         }
         if (tenant.enableSessions) {
-            setSessionUser(res, tenant.tenantId, login.user.sub);
+            setSessionUser(res, tenant.tenantId, login.user.sub, sessionSecret);
         }
         logger.info("mock user selected", {
             tenantId: tenant.tenantId,
@@ -741,26 +741,26 @@ function authorizeAdminRequest(req, adminToken) {
     if (!suppliedToken) {
         return false;
     }
-    const expected = Buffer.from(adminToken);
-    const actual = Buffer.from(suppliedToken);
-    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+    return constantTimeEqual(suppliedToken, adminToken);
 }
 /**
  * Reads the selected user from the tenant-specific mock session cookie.
  */
-function getSessionUser(req, tenant) {
-    const userSub = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
+function getSessionUser(req, tenant, sessionSecret) {
+    const cookie = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
+    const userSub = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
     return userSub ? findUser(tenant, userSub) : undefined;
 }
 /**
  * Stores the selected user in a tenant-specific mock session cookie.
  */
-function setSessionUser(res, tenantId, userSub) {
-    res.cookie(`az_oidc_mock_${tenantId}`, userSub, {
+function setSessionUser(res, tenantId, userSub, sessionSecret) {
+    const maxAge = 8 * 60 * 60 * 1000;
+    res.cookie(`az_oidc_mock_${tenantId}`, createSessionCookie(tenantId, userSub, Date.now() + maxAge, sessionSecret), {
         httpOnly: true,
         sameSite: "lax",
         path: `/${tenantId}`,
-        maxAge: 8 * 60 * 60 * 1000
+        maxAge
     });
 }
 /**
@@ -784,6 +784,54 @@ function parseCookies(header) {
         .map((part) => part.trim().split("="))
         .filter(([key, value]) => key && value)
         .map(([key, value]) => [key, decodeURIComponent(value)]));
+}
+function createSessionCookie(tenantId, userSub, expiresAt, sessionSecret) {
+    const payload = base64UrlJson({ tenantId, userSub, expiresAt });
+    const signature = signSessionPayload(payload, sessionSecret);
+    return `v1.${payload}.${signature}`;
+}
+function verifySessionCookie(cookie, tenantId, sessionSecret) {
+    const [version, payload, signature] = cookie.split(".");
+    if (version !== "v1" || !payload || !signature) {
+        return undefined;
+    }
+    const expected = signSessionPayload(payload, sessionSecret);
+    if (!constantTimeEqual(signature, expected)) {
+        return undefined;
+    }
+    const decoded = parseBase64UrlJson(payload);
+    if (decoded?.tenantId !== tenantId ||
+        typeof decoded.userSub !== "string" ||
+        typeof decoded.expiresAt !== "number" ||
+        decoded.expiresAt <= Date.now()) {
+        return undefined;
+    }
+    return decoded.userSub;
+}
+function signSessionPayload(payload, sessionSecret) {
+    return crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
+}
+function base64UrlJson(value) {
+    return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+function parseBase64UrlJson(value) {
+    try {
+        const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+        return decoded && typeof decoded === "object" && !Array.isArray(decoded)
+            ? decoded
+            : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+function constantTimeEqual(actualValue, expectedValue) {
+    const actual = Buffer.from(actualValue);
+    const expected = Buffer.from(expectedValue);
+    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+function createDefaultSessionSecret(keys) {
+    return crypto.createHash("sha256").update(JSON.stringify(keys.jwks)).digest("base64url");
 }
 /**
  * Sends an OAuth authorization error by redirect when possible.

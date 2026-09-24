@@ -25,6 +25,7 @@ type AppDeps = {
   state?: OidcState;
   passwordStore?: PasswordStore;
   adminToken?: string;
+  sessionSecret?: string;
 };
 
 type AuthorizeQuery = {
@@ -47,7 +48,8 @@ export function createApp({
   logger = createLogger(),
   state = new OidcState(),
   passwordStore = new PasswordStore(),
-  adminToken
+  adminToken,
+  sessionSecret = createDefaultSessionSecret(keys)
 }: AppDeps): express.Express {
   const app = express();
   const getConfig = typeof config === "function" ? config : () => config;
@@ -112,7 +114,7 @@ export function createApp({
       return;
     }
     if (enableSessions === true) {
-      const sessionUser = getSessionUser(req, tenant);
+      const sessionUser = getSessionUser(req, tenant, sessionSecret);
       if (sessionUser) {
         logger.verbose(config, "authorize request satisfied from existing session", {
           tenantId: tenant.tenantId,
@@ -182,7 +184,7 @@ export function createApp({
     }
 
     if (tenant.enableSessions) {
-      setSessionUser(res, tenant.tenantId, login.user.sub);
+      setSessionUser(res, tenant.tenantId, login.user.sub, sessionSecret);
     }
     logger.info("mock user selected", {
       tenantId: tenant.tenantId,
@@ -930,28 +932,28 @@ function authorizeAdminRequest(req: Request, adminToken: string | undefined): bo
     return false;
   }
 
-  const expected = Buffer.from(adminToken);
-  const actual = Buffer.from(suppliedToken);
-  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+  return constantTimeEqual(suppliedToken, adminToken);
 }
 
 /**
  * Reads the selected user from the tenant-specific mock session cookie.
  */
-function getSessionUser(req: Request, tenant: MockTenant): MockUser | undefined {
-  const userSub = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
+function getSessionUser(req: Request, tenant: MockTenant, sessionSecret: string): MockUser | undefined {
+  const cookie = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
+  const userSub = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
   return userSub ? findUser(tenant, userSub) : undefined;
 }
 
 /**
  * Stores the selected user in a tenant-specific mock session cookie.
  */
-function setSessionUser(res: Response, tenantId: string, userSub: string): void {
-  res.cookie(`az_oidc_mock_${tenantId}`, userSub, {
+function setSessionUser(res: Response, tenantId: string, userSub: string, sessionSecret: string): void {
+  const maxAge = 8 * 60 * 60 * 1000;
+  res.cookie(`az_oidc_mock_${tenantId}`, createSessionCookie(tenantId, userSub, Date.now() + maxAge, sessionSecret), {
     httpOnly: true,
     sameSite: "lax",
     path: `/${tenantId}`,
-    maxAge: 8 * 60 * 60 * 1000
+    maxAge
   });
 }
 
@@ -978,6 +980,64 @@ function parseCookies(header?: string): Record<string, string> {
       .filter(([key, value]) => key && value)
       .map(([key, value]) => [key, decodeURIComponent(value)])
   );
+}
+
+function createSessionCookie(tenantId: string, userSub: string, expiresAt: number, sessionSecret: string): string {
+  const payload = base64UrlJson({ tenantId, userSub, expiresAt });
+  const signature = signSessionPayload(payload, sessionSecret);
+  return `v1.${payload}.${signature}`;
+}
+
+function verifySessionCookie(cookie: string, tenantId: string, sessionSecret: string): string | undefined {
+  const [version, payload, signature] = cookie.split(".");
+  if (version !== "v1" || !payload || !signature) {
+    return undefined;
+  }
+
+  const expected = signSessionPayload(payload, sessionSecret);
+  if (!constantTimeEqual(signature, expected)) {
+    return undefined;
+  }
+
+  const decoded = parseBase64UrlJson(payload);
+  if (
+    decoded?.tenantId !== tenantId ||
+    typeof decoded.userSub !== "string" ||
+    typeof decoded.expiresAt !== "number" ||
+    decoded.expiresAt <= Date.now()
+  ) {
+    return undefined;
+  }
+  return decoded.userSub;
+}
+
+function signSessionPayload(payload: string, sessionSecret: string): string {
+  return crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
+}
+
+function base64UrlJson(value: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function parseBase64UrlJson(value: string): Record<string, unknown> | undefined {
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    return decoded && typeof decoded === "object" && !Array.isArray(decoded)
+      ? decoded as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function constantTimeEqual(actualValue: string, expectedValue: string): boolean {
+  const actual = Buffer.from(actualValue);
+  const expected = Buffer.from(expectedValue);
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+function createDefaultSessionSecret(keys: SigningKeys): string {
+  return crypto.createHash("sha256").update(JSON.stringify(keys.jwks)).digest("base64url");
 }
 
 /**

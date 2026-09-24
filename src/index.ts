@@ -12,12 +12,13 @@ const configPath = process.env.CONFIG_PATH ?? "config.json";
 const refreshTokenStorePath = path.join(path.dirname(path.resolve(configPath)), "refresh-tokens.json");
 const passwdPath = path.join(path.dirname(path.resolve(configPath)), "passwd");
 const adminToken = process.env.OIDC_MOCK_ADMIN_TOKEN;
+const sessionSecret = process.env.OIDC_MOCK_SESSION_SECRET;
 let config = loadConfig(configPath);
 const keys = await createSigningKeys();
 const logger = createLogger();
 const state = new OidcState(refreshTokenStorePath);
 const passwordStore = new PasswordStore(passwdPath);
-const app = createApp({ config: () => config, keys, logger, state, passwordStore, adminToken });
+const app = createApp({ config: () => config, keys, logger, state, passwordStore, adminToken, sessionSecret });
 
 watchConfig(configPath, (reloaded) => {
   config = reloaded;
