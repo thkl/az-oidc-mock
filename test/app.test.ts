@@ -257,6 +257,60 @@ describe("Azure OIDC mock", () => {
     }
   });
 
+  it("normalizes whitespace-separated scope values when admin config is saved", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-admin-"));
+    try {
+      const configPath = path.join(dir, "config.json");
+      await fs.writeFile(configPath, `${JSON.stringify(adminConfig(), null, 2)}\n`, "utf8");
+
+      let currentConfig = adminConfig();
+      const app = createApp({
+        config: () => currentConfig,
+        keys,
+        logger: silentLogger,
+        configPath,
+        onConfigSaved: (saved) => {
+          currentConfig = saved;
+        }
+      });
+      const agent = request.agent(app);
+
+      const login = await agent
+        .post("/internal/login")
+        .type("form")
+        .send({
+          response_type: "code",
+          client_id: "internal-admin",
+          redirect_uri: "http://127.0.0.1:3000/internal/admin/callback",
+          scope: "openid profile email",
+          state: "admin",
+          user_sub: "admin-1"
+        })
+        .expect(302);
+      await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
+
+      const nextConfig = {
+        ...currentConfig,
+        tenants: currentConfig.tenants.map((tenant) =>
+          tenant.tenantId === "common"
+            ? {
+              ...tenant,
+              clients: tenant.clients.map((client) =>
+                client.clientId === "local-app" ? { ...client, allowedScopes: ["openid profile email"] } : client
+              )
+            }
+            : tenant
+        )
+      };
+      await agent.put("/internal/admin/api/config").send({ config: nextConfig }).expect(200);
+
+      const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as AppConfig;
+      expect(saved.tenants[0].clients[0].allowedScopes).toEqual(["openid", "profile", "email"]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects clients from another tenant", async () => {
     const app = createApp({ config, keys, logger: silentLogger });
 

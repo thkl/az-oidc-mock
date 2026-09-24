@@ -108,12 +108,25 @@ export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"
  * Writes a validated configuration file atomically.
  */
 export function saveConfig(configPath: string, nextConfig: AppConfig): AppConfig {
-  const parsed = parseConfig(nextConfig);
+  const parsed = parseConfig(normalizeConfigForSave(nextConfig));
   const resolved = path.resolve(configPath);
   const tmpPath = `${resolved}.${process.pid}.tmp`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
   fs.renameSync(tmpPath, resolved);
   return parsed;
+}
+
+function normalizeConfigForSave(config: AppConfig): AppConfig {
+  return {
+    ...config,
+    tenants: config.tenants.map((tenant) => ({
+      ...tenant,
+      clients: tenant.clients.map((client) => ({
+        ...client,
+        allowedScopes: client.allowedScopes.flatMap((scope) => scope.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean))
+      }))
+    }))
+  };
 }
 
 /**
