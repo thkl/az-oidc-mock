@@ -134,6 +134,37 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
       });
     }
   });
+
+  app.delete("/internal/admin/api/mfa", (req, res) => {
+    const config = context.getConfig();
+    const auth = getAdminRequestUser(config, req, context.sessionSecret);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+      return;
+    }
+
+    const body = readObjectBody(req);
+    const tenantId = readString(body.tenant_id) ?? readString(body.tenantId);
+    const userSub = readString(body.user_sub) ?? readString(body.userSub);
+    const tenant = tenantId ? findTenant(config, tenantId) : undefined;
+    const user = tenant && userSub ? findUser(tenant, userSub) : undefined;
+    if (!tenant || !user) {
+      res.status(400).json({
+        error: "invalid_request",
+        error_description: "tenant_id and user_sub are required"
+      });
+      return;
+    }
+
+    const deleted = context.mfaStore.remove(tenant.tenantId, user.sub);
+    context.logger.info("admin user 2fa reset", {
+      adminUserSub: auth.user.sub,
+      tenantId: tenant.tenantId,
+      userSub: user.sub,
+      deleted
+    });
+    res.json({ deleted, tenant_id: tenant.tenantId, user_sub: user.sub });
+  });
 }
 
 function redactConfigSecrets(config: AppConfig): AppConfig {
@@ -231,6 +262,8 @@ function createInternalTenantExample(config: AppConfig): string {
     secure: true,
     enableSessions: true,
     sessionLifetimeSeconds: 28800,
+    twoFactorEnabled: false,
+    twoFactorMandatory: false,
     clients: [
       {
         clientId: ADMIN_CLIENT_ID,

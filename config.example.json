@@ -12,6 +12,8 @@
       "secure": false,
       "enableSessions": true,
       "sessionLifetimeSeconds": 28800,
+      "twoFactorEnabled": false,
+      "twoFactorMandatory": false,
       "clients": [
         {
           "clientId": "local-app",
@@ -51,6 +53,8 @@
       "secure": false,
       "enableSessions": true,
       "sessionLifetimeSeconds": 28800,
+      "twoFactorEnabled": false,
+      "twoFactorMandatory": false,
       "clients": [
         {
           "clientId": "contoso-app",
@@ -76,6 +80,8 @@
       "secure": true,
       "enableSessions": true,
       "sessionLifetimeSeconds": 28800,
+      "twoFactorEnabled": false,
+      "twoFactorMandatory": false,
       "clients": [
         {
           "clientId": "internal-admin",

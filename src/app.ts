@@ -2,6 +2,7 @@ import express from "express";
 import type { AppConfig } from "./config.js";
 import { createLogger, type Logger } from "./logger.js";
 import type { SigningKeys } from "./oidc/keys.js";
+import { MfaStore } from "./oidc/mfa.js";
 import { PasswordStore } from "./oidc/passwords.js";
 import { createDefaultSessionSecret } from "./oidc/session.js";
 import { OidcState } from "./oidc/state.js";
@@ -16,6 +17,7 @@ type AppDeps = {
   logger?: Logger;
   state?: OidcState;
   passwordStore?: PasswordStore;
+  mfaStore?: MfaStore;
   adminToken?: string;
   sessionSecret?: string;
   configPath?: string;
@@ -31,6 +33,7 @@ export function createApp({
   logger = createLogger(),
   state = new OidcState(),
   passwordStore = new PasswordStore(),
+  mfaStore = new MfaStore(),
   adminToken,
   sessionSecret = createDefaultSessionSecret(keys),
   configPath,
@@ -44,6 +47,7 @@ export function createApp({
     logger,
     state,
     passwordStore,
+    mfaStore,
     adminToken,
     sessionSecret,
     configPath,

@@ -7,6 +7,7 @@ import { createApp } from "../src/app.js";
 import { loadConfig, watchConfig, type AppConfig } from "../src/config.js";
 import type { Logger } from "../src/logger.js";
 import { createSigningKeys, type SigningKeys } from "../src/oidc/keys.js";
+import { createTotpCode, MfaStore } from "../src/oidc/mfa.js";
 import { createPasswordHash, PasswordStore } from "../src/oidc/passwords.js";
 import { OidcState } from "../src/oidc/state.js";
 import { loadTlsOptions } from "../src/tls.js";
@@ -41,6 +42,8 @@ const config: AppConfig = {
       secure: false,
       enableSessions: true,
       sessionLifetimeSeconds: 8 * 60 * 60,
+      twoFactorEnabled: false,
+      twoFactorMandatory: false,
       users: [
         {
           sub: "user-1",
@@ -67,6 +70,8 @@ const config: AppConfig = {
       secure: false,
       enableSessions: true,
       sessionLifetimeSeconds: 8 * 60 * 60,
+      twoFactorEnabled: false,
+      twoFactorMandatory: false,
       users: [
         {
           sub: "contoso-user-1",
@@ -608,6 +613,123 @@ describe("Azure OIDC mock", () => {
     }
   });
 
+  it("lets users skip optional 2FA enrollment", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-mfa-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      const app = createApp({
+        config: secureConfig({ twoFactorEnabled: true, twoFactorMandatory: false }),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath),
+        mfaStore: new MfaStore(path.join(dir, "mfa.json")),
+        sessionSecret: "mfa-test-secret"
+      });
+
+      const choice = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(200);
+      expect(choice.text).toContain("Set up 2FA");
+      expect(choice.text).toContain("Continue without 2FA");
+
+      const login = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), mfa_challenge: extractInputValue(choice.text, "mfa_challenge"), mfa_action: "continue" })
+        .expect(302);
+      expect(new URL(login.header.location).searchParams.get("code")).toBeTruthy();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("requires mandatory 2FA setup before issuing the login code", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-mfa-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      const mfaStore = new MfaStore(path.join(dir, "mfa.json"));
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      const app = createApp({
+        config: secureConfig({ twoFactorEnabled: true, twoFactorMandatory: true }),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath),
+        mfaStore,
+        sessionSecret: "mfa-test-secret"
+      });
+
+      const setup = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(200);
+      expect(setup.text).toContain("Two-factor authentication is required");
+      expect(setup.text).not.toContain("Continue without 2FA");
+
+      const secret = extractSecret(setup.text);
+      const failed = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), mfa_challenge: extractInputValue(setup.text, "mfa_challenge"), mfa_action: "setup", mfa_code: "000000" })
+        .expect(401);
+      expect(failed.text).toContain("Authenticator code is invalid");
+
+      const login = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), mfa_challenge: extractInputValue(failed.text, "mfa_challenge"), mfa_action: "setup", mfa_code: createTotpCode(secret) })
+        .expect(302);
+      expect(new URL(login.header.location).searchParams.get("code")).toBeTruthy();
+      expect(mfaStore.isEnrolled("common", "user-1")).toBe(true);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("requires enrolled users to verify 2FA on login", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-mfa-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      const mfaStore = new MfaStore(path.join(dir, "mfa.json"));
+      const secret = "JBSWY3DPEHPK3PXP";
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      mfaStore.enrollTotp("common", "user-1", secret);
+      const app = createApp({
+        config: secureConfig({ twoFactorEnabled: true }),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath),
+        mfaStore,
+        sessionSecret: "mfa-test-secret"
+      });
+
+      const verify = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(200);
+      expect(verify.text).toContain("Authenticator Code");
+
+      await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), mfa_challenge: extractInputValue(verify.text, "mfa_challenge"), mfa_action: "verify", mfa_code: "000000" })
+        .expect(401);
+
+      const login = await request(app)
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), mfa_challenge: extractInputValue(verify.text, "mfa_challenge"), mfa_action: "verify", mfa_code: createTotpCode(secret) })
+        .expect(302);
+      expect(new URL(login.header.location).searchParams.get("code")).toBeTruthy();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("lets an authorized internal caller set and remove secure tenant passwords", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passwd-"));
     try {
@@ -1049,6 +1171,23 @@ async function loginInternalAdmin(agent: request.Agent): Promise<void> {
     })
     .expect(302);
   await agent.get(new URL(login.header.location).pathname + new URL(login.header.location).search).expect(302);
+}
+
+function extractInputValue(html: string, name: string): string {
+  const pattern = new RegExp(`name="${name}" value="([^"]+)"`);
+  const match = pattern.exec(html);
+  if (!match) {
+    throw new Error(`Input ${name} not found`);
+  }
+  return match[1].replaceAll("&quot;", "\"").replaceAll("&amp;", "&");
+}
+
+function extractSecret(html: string): string {
+  const match = /<div class="secret">([^<]+)<\/div>/.exec(html);
+  if (!match) {
+    throw new Error("TOTP secret not found");
+  }
+  return match[1];
 }
 
 function disableCommonDevice(): AppConfig {

@@ -30,6 +30,8 @@ const tenantSchema = z.object({
     secure: z.boolean().default(false),
     enableSessions: z.boolean().default(true),
     sessionLifetimeSeconds: z.number().int().positive().default(8 * 60 * 60),
+    twoFactorEnabled: z.boolean().default(false),
+    twoFactorMandatory: z.boolean().default(false),
 });
 const tlsSchema = z.object({
     keyPath: z.string().min(1).optional(),
@@ -100,6 +102,7 @@ function normalizeConfigForSave(config) {
         ...config,
         tenants: config.tenants.map((tenant) => ({
             ...tenant,
+            twoFactorEnabled: tenant.twoFactorEnabled || tenant.twoFactorMandatory,
             clients: tenant.clients.map((client) => ({
                 ...client,
                 allowedScopes: client.allowedScopes.flatMap((scope) => scope.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean))

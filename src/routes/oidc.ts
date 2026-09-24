@@ -1,8 +1,10 @@
 import type { Express, Request, Response } from "express";
+import crypto from "node:crypto";
 import type { AppConfig, MockClient, MockTenant, MockUser } from "../config.js";
 import { tenantIssuer } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { SigningKeys } from "../oidc/keys.js";
+import { createTotpSecret, createTotpUri, verifyTotpSecret } from "../oidc/mfa.js";
 import type { PasswordStore } from "../oidc/passwords.js";
 import { clearSessionUser, getSessionUser, setSessionUser } from "../oidc/session.js";
 import type { OidcState } from "../oidc/state.js";
@@ -16,7 +18,7 @@ import {
   validateRedirectUri,
   validateScopes
 } from "../oidc/validation.js";
-import { renderLoginPage } from "../views/login.js";
+import { renderLoginPage, renderMfaPage } from "../views/login.js";
 import {
   emptyToUndefined,
   getTenantOr404,
@@ -36,6 +38,23 @@ type AuthorizeQuery = {
   nonce?: string;
   prompt?: string;
   device_id?: string;
+};
+
+type ValidatedAuthorizeRequest = {
+  clientId: string;
+  redirectUri: string;
+  scope: string[];
+  state?: string;
+  nonce?: string;
+  deviceId?: string;
+};
+
+type MfaChallenge = {
+  tenantId: string;
+  userSub: string;
+  request: ValidatedAuthorizeRequest;
+  setupSecret?: string;
+  expiresAt: number;
 };
 
 export function registerOidcRoutes(app: Express, context: RouteContext): void {
@@ -130,7 +149,12 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
-    const login = authenticateLogin(tenant, req, context.passwordStore);
+    const challenge = readString(req.body.mfa_challenge)
+      ? verifyMfaChallenge(readString(req.body.mfa_challenge), tenant.tenantId, context.sessionSecret)
+      : undefined;
+    const login = challenge
+      ? authenticateMfaChallengeUser(tenant, challenge)
+      : authenticateLogin(tenant, req, context.passwordStore);
     if (!login.ok) {
       context.logger.warn("login rejected", { tenantId: tenant.tenantId, reason: login.description });
       if (tenant.secure) {
@@ -149,15 +173,31 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
-    if (tenant.enableSessions) {
-      setSessionUser(res, tenant, login.user.sub, context.sessionSecret);
-    }
-    context.logger.info("mock user selected", {
-      tenantId: tenant.tenantId,
-      clientId: validation.client.clientId,
-      userSub: login.user.sub
+    const mfa = handleMfaLoginStep({
+      tenant,
+      user: login.user,
+      validation,
+      req,
+      res,
+      sessionSecret: context.sessionSecret,
+      mfaStore: context.mfaStore,
+      challenge,
+      config
     });
-    redirectWithCode(res, context.state, tenant.tenantId, validation.client, validation.request, login.user.sub);
+    if (!mfa.complete) {
+      return;
+    }
+
+    completeLogin({
+      tenant,
+      user: login.user,
+      validation,
+      res,
+      state: context.state,
+      sessionSecret: context.sessionSecret,
+      logger: context.logger,
+      config
+    });
   });
 
   app.post("/:tenantId/oauth2/v2.0/token", async (req, res) => {
@@ -409,6 +449,258 @@ function redirectWithCode(
   }
   res.redirect(redirectUrl.toString());
 }
+
+function handleMfaLoginStep(args: {
+  tenant: MockTenant;
+  user: MockUser;
+  validation: { client: MockClient; request: ValidatedAuthorizeRequest };
+  req: Request;
+  res: Response;
+  sessionSecret: string;
+  mfaStore: RouteContext["mfaStore"];
+  challenge?: MfaChallenge;
+  config: AppConfig;
+}): { complete: true } | { complete: false } {
+  const mfaEnabled = args.tenant.twoFactorEnabled || args.tenant.twoFactorMandatory;
+  if (!mfaEnabled) {
+    return { complete: true };
+  }
+
+  const params = authorizeParamsFromRequest(args.validation.client, args.validation.request);
+  const action = readString(args.req.body.mfa_action);
+  const code = readString(args.req.body.mfa_code);
+  const enrolled = args.mfaStore.isEnrolled(args.tenant.tenantId, args.user.sub);
+
+  if (args.challenge) {
+    if (action === "continue" && !args.tenant.twoFactorMandatory && !enrolled) {
+      return { complete: true };
+    }
+
+    if (action === "setup") {
+      const secret = args.challenge.setupSecret ?? createTotpSecret();
+      if (!code) {
+        const setupChallenge = createMfaChallenge({
+          tenantId: args.tenant.tenantId,
+          userSub: args.user.sub,
+          request: args.validation.request,
+          setupSecret: secret
+        }, args.sessionSecret);
+        args.res.type("html").send(renderMfaPage(args.tenant, {
+          mode: "setup",
+          challenge: setupChallenge,
+          params,
+          secret,
+          otpauthUri: createTotpUri({
+            issuer: args.config.baseUrl.replace(/\/$/, ""),
+            tenantId: args.tenant.tenantId,
+            accountName: args.user.preferred_username,
+            secret
+          }),
+          mandatory: args.tenant.twoFactorMandatory
+        }));
+        return { complete: false };
+      }
+
+      if (!verifyTotpSecret(secret, code)) {
+        const retryChallenge = createMfaChallenge({
+          tenantId: args.tenant.tenantId,
+          userSub: args.user.sub,
+          request: args.validation.request,
+          setupSecret: secret
+        }, args.sessionSecret);
+        args.res.type("html").status(401).send(renderMfaPage(args.tenant, {
+          mode: "setup",
+          challenge: retryChallenge,
+          params,
+          secret,
+          otpauthUri: createTotpUri({
+            issuer: args.config.baseUrl.replace(/\/$/, ""),
+            tenantId: args.tenant.tenantId,
+            accountName: args.user.preferred_username,
+            secret
+          }),
+          mandatory: args.tenant.twoFactorMandatory,
+          error: "Authenticator code is invalid"
+        }));
+        return { complete: false };
+      }
+
+      args.mfaStore.enrollTotp(args.tenant.tenantId, args.user.sub, secret);
+      return { complete: true };
+    }
+
+    if (action === "verify" && code && args.mfaStore.verifyTotp(args.tenant.tenantId, args.user.sub, code)) {
+      return { complete: true };
+    }
+
+    args.res.type("html").status(401).send(renderMfaPage(args.tenant, {
+      mode: enrolled ? "verify" : "choose",
+      challenge: createMfaChallenge({
+        tenantId: args.tenant.tenantId,
+        userSub: args.user.sub,
+        request: args.validation.request
+      }, args.sessionSecret),
+      params,
+      mandatory: args.tenant.twoFactorMandatory,
+      error: enrolled ? "Authenticator code is invalid" : "Choose a two-factor option to continue"
+    }));
+    return { complete: false };
+  }
+
+  if (enrolled) {
+    args.res.type("html").send(renderMfaPage(args.tenant, {
+      mode: "verify",
+      challenge: createMfaChallenge({
+        tenantId: args.tenant.tenantId,
+        userSub: args.user.sub,
+        request: args.validation.request
+      }, args.sessionSecret),
+      params
+    }));
+    return { complete: false };
+  }
+
+  if (args.tenant.twoFactorMandatory) {
+    const secret = createTotpSecret();
+    args.res.type("html").send(renderMfaPage(args.tenant, {
+      mode: "setup",
+      challenge: createMfaChallenge({
+        tenantId: args.tenant.tenantId,
+        userSub: args.user.sub,
+        request: args.validation.request,
+        setupSecret: secret
+      }, args.sessionSecret),
+      params,
+      secret,
+      otpauthUri: createTotpUri({
+        issuer: args.config.baseUrl.replace(/\/$/, ""),
+        tenantId: args.tenant.tenantId,
+        accountName: args.user.preferred_username,
+        secret
+      }),
+      mandatory: true
+    }));
+    return { complete: false };
+  }
+
+  args.res.type("html").send(renderMfaPage(args.tenant, {
+    mode: "choose",
+    challenge: createMfaChallenge({
+      tenantId: args.tenant.tenantId,
+      userSub: args.user.sub,
+      request: args.validation.request
+    }, args.sessionSecret),
+    params,
+    mandatory: false
+  }));
+  return { complete: false };
+}
+
+function completeLogin(args: {
+  tenant: MockTenant;
+  user: MockUser;
+  validation: { client: MockClient; request: ValidatedAuthorizeRequest };
+  res: Response;
+  state: OidcState;
+  sessionSecret: string;
+  logger: Logger;
+  config: AppConfig;
+}): void {
+  if (args.tenant.enableSessions) {
+    setSessionUser(args.res, args.tenant, args.user.sub, args.sessionSecret);
+  }
+  args.logger.info("mock user selected", {
+    tenantId: args.tenant.tenantId,
+    clientId: args.validation.client.clientId,
+    userSub: args.user.sub
+  });
+  redirectWithCode(args.res, args.state, args.tenant.tenantId, args.validation.client, args.validation.request, args.user.sub);
+}
+
+function authorizeParamsFromRequest(client: MockClient, request: ValidatedAuthorizeRequest): Record<string, string> {
+  return {
+    client_id: client.clientId,
+    redirect_uri: request.redirectUri,
+    response_type: "code",
+    scope: request.scope.join(" "),
+    state: request.state ?? "",
+    nonce: request.nonce ?? "",
+    device_id: request.deviceId ?? ""
+  };
+}
+
+function authenticateMfaChallengeUser(
+  tenant: MockTenant,
+  challenge: MfaChallenge | undefined
+): { ok: true; user: MockUser } | { ok: false; description: string } {
+  if (!challenge) {
+    return { ok: false, description: "Two-factor challenge is invalid or expired" };
+  }
+
+  const user = findUser(tenant, challenge.userSub);
+  return user ? { ok: true, user } : { ok: false, description: "User no longer exists" };
+}
+
+function createMfaChallenge(challenge: Omit<MfaChallenge, "expiresAt">, sessionSecret: string): string {
+  const payload = Buffer.from(JSON.stringify({
+    ...challenge,
+    expiresAt: Date.now() + 5 * 60 * 1000
+  }), "utf8").toString("base64url");
+  const signature = crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
+  return `v1.${payload}.${signature}`;
+}
+
+function verifyMfaChallenge(value: string | undefined, tenantId: string, sessionSecret: string): MfaChallenge | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const [version, payload, signature] = value.split(".");
+  if (version !== "v1" || !payload || !signature) {
+    return undefined;
+  }
+
+  const expected = crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
+  if (!constantTimeEqual(signature, expected)) {
+    return undefined;
+  }
+
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as MfaChallenge;
+    if (
+      decoded.tenantId !== tenantId ||
+      typeof decoded.userSub !== "string" ||
+      typeof decoded.expiresAt !== "number" ||
+      decoded.expiresAt <= Date.now() ||
+      !isValidatedAuthorizeRequest(decoded.request)
+    ) {
+      return undefined;
+    }
+    return decoded;
+  } catch {
+    return undefined;
+  }
+}
+
+function isValidatedAuthorizeRequest(value: unknown): value is ValidatedAuthorizeRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const request = value as Record<string, unknown>;
+  return typeof request.clientId === "string" &&
+    typeof request.redirectUri === "string" &&
+    Array.isArray(request.scope) &&
+    request.scope.every((scope) => typeof scope === "string") &&
+    (request.state === undefined || typeof request.state === "string") &&
+    (request.nonce === undefined || typeof request.nonce === "string") &&
+    (request.deviceId === undefined || typeof request.deviceId === "string");
+}
+
+function constantTimeEqual(actualValue: string, expectedValue: string): boolean {
+  const actual = Buffer.from(actualValue);
+  const expected = Buffer.from(expectedValue);
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
 
 async function handleAuthorizationCodeGrant(args: {
   config: AppConfig;

@@ -287,6 +287,8 @@ export function renderAdminPage(user) {
             <div class="checks">
               <label class="check"><input v-model="selectedTenant.secure" type="checkbox"> Secure login</label>
               <label class="check"><input v-model="selectedTenant.enableSessions" type="checkbox"> Login sessions</label>
+              <label class="check"><input v-model="selectedTenant.twoFactorEnabled" type="checkbox"> 2FA enabled</label>
+              <label class="check"><input v-model="selectedTenant.twoFactorMandatory" type="checkbox" @change="selectedTenant.twoFactorEnabled = selectedTenant.twoFactorEnabled || selectedTenant.twoFactorMandatory"> 2FA mandatory</label>
             </div>
           </div>
         </section>
@@ -348,6 +350,9 @@ export function renderAdminPage(user) {
                 <button type="button" @click="generateUserPassword">Generate</button>
                 <button type="button" @click="setUserPassword" :disabled="!selectedUser.newPassword">Set</button>
               </div>
+              <div class="actions">
+                <button type="button" @click="resetUserMfa">Reset 2FA</button>
+              </div>
               <div class="actions"><button class="danger" type="button" @click="removeUser">Delete User</button></div>
             </div>
             <div v-else class="empty">Select or add a user.</div>
@@ -367,7 +372,9 @@ export function renderAdminPage(user) {
       devices: [],
       secure: false,
       enableSessions: true,
-      sessionLifetimeSeconds: 28800
+      sessionLifetimeSeconds: 28800,
+      twoFactorEnabled: false,
+      twoFactorMandatory: false
     });
     const splitLines = (value) => String(value || '').split(/\\r?\\n|,/).map((item) => item.trim()).filter(Boolean);
     const splitTokens = (value) => String(value || '').split(/[\\s,]+/).map((item) => item.trim()).filter(Boolean);
@@ -381,6 +388,8 @@ export function renderAdminPage(user) {
       const copy = clone(config);
       for (const tenant of copy.tenants) {
         tenant.devicesText = JSON.stringify(tenant.devices || [], null, 2);
+        tenant.twoFactorEnabled = Boolean(tenant.twoFactorEnabled || tenant.twoFactorMandatory);
+        tenant.twoFactorMandatory = Boolean(tenant.twoFactorMandatory);
         for (const client of tenant.clients) {
           client.redirectUrisText = (client.redirectUris || []).join('\\n');
           client.allowedScopesText = (client.allowedScopes || []).join(' ');
@@ -397,6 +406,8 @@ export function renderAdminPage(user) {
       const copy = clone(config);
       for (const tenant of copy.tenants) {
         tenant.devices = JSON.parse(tenant.devicesText || '[]');
+        tenant.twoFactorEnabled = Boolean(tenant.twoFactorEnabled || tenant.twoFactorMandatory);
+        tenant.twoFactorMandatory = Boolean(tenant.twoFactorMandatory);
         delete tenant.devicesText;
         for (const client of tenant.clients) {
           client.redirectUris = splitLines(client.redirectUrisText);
@@ -546,6 +557,26 @@ export function renderAdminPage(user) {
             if (!response.ok) throw new Error(payload.error_description || 'Unable to set password');
             this.selectedUser.newPassword = '';
             this.status = { type: 'ok', message: 'Password updated.' };
+          } catch (error) {
+            this.status = { type: 'error', message: error.message };
+          }
+        },
+        async resetUserMfa() {
+          if (!this.selectedTenant || !this.selectedUser) return;
+          if (!confirm('Reset the authenticator enrollment for this user?')) return;
+          this.status = { type: '', message: '' };
+          try {
+            const response = await fetch('/internal/admin/api/mfa', {
+              method: 'DELETE',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                tenant_id: this.selectedTenant.tenantId,
+                user_sub: this.selectedUser.sub
+              })
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error_description || 'Unable to reset 2FA');
+            this.status = { type: 'ok', message: payload.deleted ? '2FA enrollment reset.' : 'No 2FA enrollment existed.' };
           } catch (error) {
             this.status = { type: 'error', message: error.message };
           }

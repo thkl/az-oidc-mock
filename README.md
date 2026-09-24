@@ -250,6 +250,8 @@ Set `"secure": true` on a tenant to make its interactive login behave more like 
   "secure": true,
   "enableSessions": true,
   "sessionLifetimeSeconds": 28800,
+  "twoFactorEnabled": false,
+  "twoFactorMandatory": false,
   "users": [
     {
       "sub": "00000000-0000-0000-0000-000000000001",
@@ -289,6 +291,25 @@ common:00000000-0000-0000-0000-000000000001:PASTE_HASH_HERE
 When `"enableSessions": true`, a successful login stores a tenant-scoped HTTP-only cookie so the next authorize request can proceed without entering the password again. `GET /{tenantId}/oauth2/v2.0/logout` clears that cookie. Set `"enableSessions": false` to require the password for every interactive login.
 
 Use `sessionLifetimeSeconds` on the tenant to control how long the login-session cookie is valid. The default is `28800` seconds, which is 8 hours.
+
+### Two-Factor Login
+
+Set `twoFactorEnabled` on a tenant to offer TOTP-based authenticator setup after the primary login. If the user has not enrolled yet, the login page lets them either set up 2FA or continue without it.
+
+Set `twoFactorMandatory` to require setup before the login can finish. Mandatory mode also implies `twoFactorEnabled` when the admin UI saves the config.
+
+```json
+{
+  "tenantId": "common",
+  "secure": true,
+  "twoFactorEnabled": true,
+  "twoFactorMandatory": true
+}
+```
+
+Enrollments are stored in `mfa.json` next to the active config file, so they survive restarts when that config directory is persisted. The admin UI can reset a user's 2FA enrollment from the user editor.
+
+Passkeys are not implemented yet. They need a WebAuthn challenge/credential store and browser-origin handling, which is larger than the current form-based login flow.
 
 Session cookies are signed. Set `OIDC_MOCK_SESSION_SECRET` to a strong shared value in Docker Swarm or any multi-replica deployment:
 

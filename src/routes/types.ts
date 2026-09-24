@@ -1,6 +1,7 @@
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { SigningKeys } from "../oidc/keys.js";
+import type { MfaStore } from "../oidc/mfa.js";
 import type { PasswordStore } from "../oidc/passwords.js";
 import type { OidcState } from "../oidc/state.js";
 
@@ -10,6 +11,7 @@ export type RouteContext = {
   logger: Logger;
   state: OidcState;
   passwordStore: PasswordStore;
+  mfaStore: MfaStore;
   adminToken?: string;
   sessionSecret: string;
   configPath?: string;

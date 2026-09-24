@@ -4,6 +4,7 @@ import { createApp } from "./app.js";
 import { loadConfig, watchConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { createSigningKeys } from "./oidc/keys.js";
+import { MfaStore } from "./oidc/mfa.js";
 import { PasswordStore } from "./oidc/passwords.js";
 import { OidcState } from "./oidc/state.js";
 import { loadTlsOptions } from "./tls.js";
@@ -11,6 +12,7 @@ import { loadTlsOptions } from "./tls.js";
 const configPath = process.env.CONFIG_PATH ?? "config.json";
 const refreshTokenStorePath = path.join(path.dirname(path.resolve(configPath)), "refresh-tokens.json");
 const passwdPath = path.join(path.dirname(path.resolve(configPath)), "passwd");
+const mfaStorePath = path.join(path.dirname(path.resolve(configPath)), "mfa.json");
 const adminToken = process.env.OIDC_MOCK_ADMIN_TOKEN;
 const sessionSecret = process.env.OIDC_MOCK_SESSION_SECRET;
 let config = loadConfig(configPath);
@@ -18,12 +20,14 @@ const keys = await createSigningKeys();
 const logger = createLogger();
 const state = new OidcState(refreshTokenStorePath);
 const passwordStore = new PasswordStore(passwdPath);
+const mfaStore = new MfaStore(mfaStorePath);
 const app = createApp({
   config: () => config,
   keys,
   logger,
   state,
   passwordStore,
+  mfaStore,
   adminToken,
   sessionSecret,
   configPath,
@@ -59,6 +63,7 @@ server.listen(port, () => {
     tenantCount: config.tenants.length,
     refreshTokenStorePath,
     passwdPath,
+    mfaStorePath,
     verbose: config.verbose
   });
 });
