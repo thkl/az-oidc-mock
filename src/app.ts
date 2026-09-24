@@ -354,12 +354,8 @@ export function createApp({
       return;
     }
 
-    const client = findClient(tenant, String(verification.claims.aud));
-    const user = findUser(tenant, String(verification.claims.sub));
-    const device = typeof verification.claims.deviceid === "string"
-      ? findDevice(tenant, verification.claims.deviceid)
-      : undefined;
-    if (!client || !client.enabled || !user || isInactiveTokenDevice(tenant, verification.claims.deviceid, device)) {
+    const subject = resolveVerifiedTokenSubject(tenant, verification.claims);
+    if (!subject.ok) {
       logger.warn("internal token verification rejected unknown claims", {
         tenantId: tenant.tenantId,
         audience: verification.claims.aud,
@@ -369,23 +365,63 @@ export function createApp({
       res.status(401).json({
         active: false,
         error: "invalid_token",
-        error_description: describeInactiveTokenSubject(tenant, client, user, verification.claims.deviceid, device)
+        error_description: subject.description
       });
       return;
     }
 
     logger.verbose(config, "internal token verification succeeded", {
       tenantId: tenant.tenantId,
-      clientId: client.clientId,
-      userSub: user.sub
+      clientId: subject.client.clientId,
+      userSub: subject.user.sub
     });
     res.json({
       active: true,
       tenant_id: tenant.tenantId,
-      client_id: client.clientId,
-      user_sub: user.sub,
-      ...(device ? { device_id: device.deviceId } : {}),
+      client_id: subject.client.clientId,
+      user_sub: subject.user.sub,
+      ...(subject.device ? { device_id: subject.device.deviceId } : {}),
       claims: verification.claims
+    });
+  });
+
+  app.all("/:tenantId/oidc/userinfo", async (req, res) => {
+    const config = getConfig();
+    const tenant = getTenantOr404(config, req, res);
+    if (!tenant) return;
+
+    const token = readBearerToken(req);
+    if (!token) {
+      res.status(401).json({
+        error: "invalid_token",
+        error_description: "Bearer access token is required"
+      });
+      return;
+    }
+
+    const subject = await resolveActiveTokenSubject({ config, keys, tenant, token });
+    if (!subject.ok) {
+      logger.warn("userinfo request rejected", {
+        tenantId: tenant.tenantId,
+        error: subject.error
+      });
+      res.status(401).json({
+        error: subject.error,
+        error_description: subject.description
+      });
+      return;
+    }
+
+    const { user } = subject;
+    res.json({
+      sub: user.sub,
+      oid: user.sub,
+      name: user.name,
+      email: user.email,
+      preferred_username: user.preferred_username,
+      roles: user.roles,
+      tid: tenant.tenantId,
+      ...user.claims
     });
   });
 
@@ -466,6 +502,7 @@ function createDiscoveryDocument(config: AppConfig, tenant: MockTenant): Record<
   return {
     token_endpoint: `${tenantBase}/token`,
     token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
+    userinfo_endpoint: `${base}/${encodedTenantId}/oidc/userinfo`,
     jwks_uri: `${base}/${encodedTenantId}/discovery/v2.0/keys`,
     response_modes_supported: ["query", "form_post"],
     subject_types_supported: ["pairwise"],
@@ -1008,6 +1045,43 @@ function readBearerToken(req: Request): string | undefined {
  */
 function readObjectBody(req: Request): Record<string, unknown> {
   return req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+}
+
+async function resolveActiveTokenSubject(input: {
+  config: AppConfig;
+  keys: SigningKeys;
+  tenant: MockTenant;
+  token: string;
+}): Promise<
+  | { ok: true; client: MockClient; user: MockUser; device?: NonNullable<ReturnType<typeof findDevice>> }
+  | { ok: false; error: string; description: string }
+> {
+  const verification = await verifyAccessToken(input);
+  if (!verification.ok) {
+    return verification;
+  }
+  const subject = resolveVerifiedTokenSubject(input.tenant, verification.claims);
+  return subject.ok ? subject : { ok: false, error: "invalid_token", description: subject.description };
+}
+
+function resolveVerifiedTokenSubject(
+  tenant: MockTenant,
+  claims: Record<string, unknown>
+):
+  | { ok: true; client: MockClient; user: MockUser; device?: NonNullable<ReturnType<typeof findDevice>> }
+  | { ok: false; description: string } {
+  const client = findClient(tenant, String(claims.aud));
+  const user = findUser(tenant, String(claims.sub));
+  const device = typeof claims.deviceid === "string"
+    ? findDevice(tenant, claims.deviceid)
+    : undefined;
+  if (!client || !client.enabled || !user || isInactiveTokenDevice(tenant, claims.deviceid, device)) {
+    return {
+      ok: false,
+      description: describeInactiveTokenSubject(tenant, client, user, claims.deviceid, device)
+    };
+  }
+  return { ok: true, client, user, ...(device ? { device } : {}) };
 }
 
 function describeInactiveTokenSubject(

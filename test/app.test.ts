@@ -101,6 +101,7 @@ describe("Azure OIDC mock", () => {
 
     expect(res.body.issuer).toBe("http://127.0.0.1:3000/common/v2.0");
     expect(res.body.authorization_endpoint).toBe("http://127.0.0.1:3000/common/oauth2/v2.0/authorize");
+    expect(res.body.userinfo_endpoint).toBe("http://127.0.0.1:3000/common/oidc/userinfo");
     expect(res.body.jwks_uri).toBe("http://127.0.0.1:3000/common/discovery/v2.0/keys");
     expect(res.body.response_modes_supported).toContain("query");
     expect(res.body.grant_types_supported).toContain("refresh_token");
@@ -615,6 +616,36 @@ describe("Azure OIDC mock", () => {
     expect(verified.body.claims.aud).toBe("local-app");
     expect(verified.body.claims.deviceid).toBe("machine-1");
     expect(verified.body.claims.scp).toBe("profile email offline_access");
+  });
+
+  it("serves OIDC userinfo for a valid access token", async () => {
+    const app = createApp({ config, keys, logger: silentLogger });
+    const token = await issueAccessToken(app);
+
+    const userinfo = await request(app)
+      .get("/common/oidc/userinfo")
+      .set("authorization", `Bearer ${token}`)
+      .expect(200);
+
+    expect(userinfo.body).toMatchObject({
+      sub: "user-1",
+      oid: "user-1",
+      name: "Alice Example",
+      email: "alice@example.test",
+      preferred_username: "alice@example.test",
+      tid: "common",
+      roles: ["Admin"]
+    });
+  });
+
+  it("rejects userinfo without an access token", async () => {
+    const app = createApp({ config, keys, logger: silentLogger });
+
+    const userinfo = await request(app)
+      .get("/common/oidc/userinfo")
+      .expect(401);
+
+    expect(userinfo.body.error).toBe("invalid_token");
   });
 
   it("rejects access token verification for the wrong audience", async () => {

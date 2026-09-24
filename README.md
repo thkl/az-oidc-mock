@@ -121,6 +121,7 @@ GET  http://localhost:3000/common/v2.0/.well-known/openid-configuration
 GET  http://localhost:3000/common/discovery/v2.0/keys
 GET  http://localhost:3000/common/oauth2/v2.0/authorize
 POST http://localhost:3000/common/oauth2/v2.0/token
+GET  http://localhost:3000/common/oidc/userinfo
 GET  http://localhost:3000/common/oauth2/v2.0/logout
 POST http://localhost:3000/common/internal/token/verify
 GET  http://localhost:3000/internal/admin
