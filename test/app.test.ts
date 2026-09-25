@@ -1162,6 +1162,80 @@ describe("Azure OIDC mock", () => {
     }
   });
 
+  it("uses the home tenant MFA enrollment for shared-user step-up", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-mfa-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      const mfaStore = new MfaStore(path.join(dir, "mfa.json"));
+      const secret = "JBSWY3DPEHPK3PXP";
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      mfaStore.enrollTotp("common", "user-1", secret);
+      const sharedSecureConfig: AppConfig = {
+        ...config,
+        tenants: [
+          config.tenants[0],
+          {
+            ...config.tenants[1],
+            secure: true,
+            enableSessions: true,
+            sessionLifetimeSeconds: 8 * 60 * 60,
+            sharedUsers: [{ tenantId: "common", userSub: "user-1" }]
+          }
+        ]
+      };
+      const app = createApp({
+        config: sharedSecureConfig,
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath),
+        mfaStore,
+        sessionSecret: "shared-mfa-step-up-secret"
+      });
+      const agent = request.agent(app);
+
+      await agent
+        .post("/contoso/login")
+        .type("form")
+        .send({ ...contosoAuthorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(302);
+
+      const verify = await agent
+        .get("/contoso/oauth2/v2.0/authorize")
+        .query({ ...contosoAuthorizeQuery(), state: "shared-step-up", acr_values: "mfa" })
+        .expect(200);
+      expect(verify.text).toContain("Authenticator Code");
+      expect(verify.text).not.toContain("Two-factor authentication is required");
+
+      const login = await agent
+        .post("/contoso/login")
+        .type("form")
+        .send({
+          ...contosoAuthorizeQuery(),
+          state: "shared-step-up",
+          acr_values: "mfa",
+          mfa_challenge: extractInputValue(verify.text, "mfa_challenge"),
+          mfa_action: "verify",
+          mfa_code: createTotpCode(secret)
+        })
+        .expect(302);
+      const code = new URL(login.header.location).searchParams.get("code");
+
+      const token = await agent
+        .post("/contoso/oauth2/v2.0/token")
+        .type("form")
+        .send({
+          grant_type: "authorization_code",
+          client_id: "contoso-app",
+          code,
+          redirect_uri: "http://contoso.test/callback"
+        })
+        .expect(200);
+      expect(decodeJwt(token.body.access_token).acr).toBe("urn:az-oidc-mock:acr:mfa");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("lets an authorized internal caller set and remove secure tenant passwords", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passwd-"));
     try {

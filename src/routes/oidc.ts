@@ -139,9 +139,14 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
             sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "interaction_required", "MFA is required for this request");
             return;
           }
+          const resolvedSessionUser = resolveEffectiveUser(config, tenant, sessionUser.user.sub);
+          if (!resolvedSessionUser) {
+            sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "access_denied", "User no longer exists");
+            return;
+          }
           const mfa = handleMfaLoginStep({
             tenant,
-            user: sessionUser.user,
+            user: resolvedSessionUser,
             validation,
             req,
             res,
@@ -268,7 +273,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     // MFA is evaluated before passkey setup, so mandatory MFA cannot be bypassed by enrollment.
     const mfa = handleMfaLoginStep({
       tenant,
-      user: login.user.user,
+      user: login.user,
       validation,
       req,
       res,
@@ -808,7 +813,7 @@ function createCodeRedirectUrl(
  */
 function handleMfaLoginStep(args: {
   tenant: MockTenant;
-  user: MockUser;
+  user: ResolvedUser;
   validation: { client: MockClient; request: ValidatedAuthorizeRequest };
   req: Request;
   res: Response;
@@ -828,7 +833,9 @@ function handleMfaLoginStep(args: {
   const body = args.req.body && typeof args.req.body === "object" ? args.req.body as Record<string, unknown> : {};
   const action = readString(body.mfa_action);
   const code = readString(body.mfa_code);
-  const enrolled = args.mfaStore.isEnrolled(args.tenant.tenantId, args.user.sub);
+  const mfaTenantId = args.user.homeTenant.tenantId;
+  const user = args.user.user;
+  const enrolled = args.mfaStore.isEnrolled(mfaTenantId, user.sub);
 
   if (args.challenge) {
     // Existing challenge means the user is choosing, setting up, or verifying MFA.
@@ -843,7 +850,7 @@ function handleMfaLoginStep(args: {
         // First setup click shows the secret and asks for a code from the authenticator app.
         const setupChallenge = createMfaChallenge({
           tenantId: args.tenant.tenantId,
-          userSub: args.user.sub,
+          userSub: user.sub,
           request: args.validation.request,
           auth: args.challenge.auth,
           setupSecret: secret
@@ -855,8 +862,8 @@ function handleMfaLoginStep(args: {
           secret,
           otpauthUri: createTotpUri({
             issuer: args.config.baseUrl.replace(/\/$/, ""),
-            tenantId: args.tenant.tenantId,
-            accountName: args.user.preferred_username,
+            tenantId: mfaTenantId,
+            accountName: user.preferred_username,
             secret
           }),
           mandatory: args.tenant.twoFactorMandatory || challengeRequiresMfa
@@ -868,7 +875,7 @@ function handleMfaLoginStep(args: {
         // Invalid setup codes keep the same secret so the displayed authenticator entry remains usable.
         const retryChallenge = createMfaChallenge({
           tenantId: args.tenant.tenantId,
-          userSub: args.user.sub,
+          userSub: user.sub,
           request: args.validation.request,
           auth: args.challenge.auth,
           setupSecret: secret
@@ -880,8 +887,8 @@ function handleMfaLoginStep(args: {
           secret,
           otpauthUri: createTotpUri({
             issuer: args.config.baseUrl.replace(/\/$/, ""),
-            tenantId: args.tenant.tenantId,
-            accountName: args.user.preferred_username,
+            tenantId: mfaTenantId,
+            accountName: user.preferred_username,
             secret
           }),
           mandatory: args.tenant.twoFactorMandatory || challengeRequiresMfa,
@@ -890,12 +897,12 @@ function handleMfaLoginStep(args: {
         return { complete: false };
       }
 
-      args.mfaStore.enrollTotp(args.tenant.tenantId, args.user.sub, secret);
+      args.mfaStore.enrollTotp(mfaTenantId, user.sub, secret);
       return { complete: true, auth: authContext("mfa") };
     }
 
     // Enrolled users must provide a valid TOTP code before login can continue.
-    if (action === "verify" && code && args.mfaStore.verifyTotp(args.tenant.tenantId, args.user.sub, code)) {
+    if (action === "verify" && code && args.mfaStore.verifyTotp(mfaTenantId, user.sub, code)) {
       return { complete: true, auth: authContext("mfa") };
     }
 
@@ -903,7 +910,7 @@ function handleMfaLoginStep(args: {
       mode: enrolled ? "verify" : "choose",
       challenge: createMfaChallenge({
         tenantId: args.tenant.tenantId,
-        userSub: args.user.sub,
+        userSub: user.sub,
         request: args.validation.request,
         auth: args.challenge.auth
       }, args.sessionSecret),
@@ -920,7 +927,7 @@ function handleMfaLoginStep(args: {
       mode: "verify",
       challenge: createMfaChallenge({
         tenantId: args.tenant.tenantId,
-        userSub: args.user.sub,
+        userSub: user.sub,
         request: args.validation.request,
         auth: args.auth
       }, args.sessionSecret),
@@ -935,7 +942,7 @@ function handleMfaLoginStep(args: {
       mode: "setup",
       challenge: createMfaChallenge({
         tenantId: args.tenant.tenantId,
-        userSub: args.user.sub,
+        userSub: user.sub,
         request: args.validation.request,
         auth: args.auth,
         setupSecret: secret
@@ -944,8 +951,8 @@ function handleMfaLoginStep(args: {
       secret,
       otpauthUri: createTotpUri({
         issuer: args.config.baseUrl.replace(/\/$/, ""),
-        tenantId: args.tenant.tenantId,
-        accountName: args.user.preferred_username,
+        tenantId: mfaTenantId,
+        accountName: user.preferred_username,
         secret
       }),
       mandatory: true
@@ -957,7 +964,7 @@ function handleMfaLoginStep(args: {
     mode: "choose",
     challenge: createMfaChallenge({
       tenantId: args.tenant.tenantId,
-      userSub: args.user.sub,
+      userSub: user.sub,
       request: args.validation.request,
       auth: args.auth
     }, args.sessionSecret),
