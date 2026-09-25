@@ -19,6 +19,7 @@ const RESERVED_CLAIMS = new Set([
     "deviceid",
     "auth_level",
     "auth_original_level",
+    "acr",
     "client_info"
 ]);
 /**
@@ -52,6 +53,9 @@ export async function createIdToken(input) {
     if (input.deviceId) {
         claims.deviceid = input.deviceId;
     }
+    if (input.acr) {
+        claims.acr = input.acr;
+    }
     return signJwt(claims, input.keys);
 }
 /**
@@ -77,6 +81,7 @@ export async function createAccessToken(input) {
         roles: input.user.roles,
         auth_level: input.auth.level,
         auth_original_level: input.auth.originalLevel,
+        ...(input.acr ? { acr: input.acr } : {}),
         ...(input.deviceId ? { deviceid: input.deviceId } : {}),
         ...customClaims(input.user.claims)
     }, input.keys);

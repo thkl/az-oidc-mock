@@ -12,6 +12,7 @@ export type AuthorizationRequest = {
   state?: string;
   nonce?: string;
   deviceId?: string;
+  acr?: string;
 };
 
 export type AuthorizationCode = AuthorizationRequest & {
@@ -32,6 +33,7 @@ export type RefreshToken = {
   scope: string[];
   nonce?: string;
   deviceId?: string;
+  acr?: string;
   expiresAt: number;
 };
 
@@ -182,6 +184,7 @@ function normalizeRefreshToken(value: unknown): RefreshToken | undefined {
     token.scope.every((scope) => typeof scope === "string") &&
     (token.nonce === undefined || typeof token.nonce === "string") &&
     (token.deviceId === undefined || typeof token.deviceId === "string") &&
+    (token.acr === undefined || typeof token.acr === "string") &&
     (token.authLevel === undefined || isAuthLevel(token.authLevel)) &&
     (token.authOriginalLevel === undefined || isAuthLevel(token.authOriginalLevel)) &&
     typeof token.expiresAt === "number")) {
@@ -198,6 +201,7 @@ function normalizeRefreshToken(value: unknown): RefreshToken | undefined {
     scope: token.scope,
     nonce: token.nonce,
     deviceId: token.deviceId,
+    acr: token.acr,
     expiresAt: token.expiresAt
   };
 }

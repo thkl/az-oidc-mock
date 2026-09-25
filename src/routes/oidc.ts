@@ -33,6 +33,9 @@ import {
 } from "./http.js";
 import type { RouteContext } from "./types.js";
 
+const MFA_ACR = "urn:az-oidc-mock:acr:mfa";
+const MFA_ACR_ALIASES = new Set(["mfa", MFA_ACR]);
+
 type AuthorizeQuery = {
   client_id?: string;
   redirect_uri?: string;
@@ -42,6 +45,7 @@ type AuthorizeQuery = {
   nonce?: string;
   prompt?: string;
   device_id?: string;
+  acr_values?: string;
 };
 
 type ValidatedAuthorizeRequest = {
@@ -51,6 +55,7 @@ type ValidatedAuthorizeRequest = {
   state?: string;
   nonce?: string;
   deviceId?: string;
+  acr?: string;
 };
 
 type MfaChallenge = {
@@ -128,6 +133,27 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
     if (enableSessions === true) {
       const sessionUser = getSessionUser(req, config, tenant, context.sessionSecret);
       if (sessionUser) {
+        const sessionAuth = authContext("cookie", sessionUser.authLevel);
+        if (!satisfiesRequestedAcr(validation.request, sessionAuth)) {
+          if (req.query.prompt === "none") {
+            sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "interaction_required", "MFA is required for this request");
+            return;
+          }
+          const mfa = handleMfaLoginStep({
+            tenant,
+            user: sessionUser.user,
+            validation,
+            req,
+            res,
+            sessionSecret: context.sessionSecret,
+            mfaStore: context.mfaStore,
+            config,
+            auth: sessionAuth
+          });
+          if (!mfa.complete) {
+            return;
+          }
+        }
         context.logger.verbose(config, "authorize request satisfied from existing session", {
           tenantId: tenant.tenantId,
           clientId: validation.client.clientId,
@@ -141,7 +167,7 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
           validation.client,
           validation.request,
           sessionUser.user.sub,
-          authContext("cookie", sessionUser.authLevel)
+          sessionAuth
         );
         return;
       }
@@ -164,7 +190,8 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
         scope: validation.request.scope.join(" "),
         state: validation.request.state ?? "",
         nonce: validation.request.nonce ?? "",
-        device_id: validation.request.deviceId ?? ""
+        device_id: validation.request.deviceId ?? "",
+        acr_values: acrValuesFromRequest(validation.request)
       }, readString(req.query.login_error), listEffectiveUsers(config, tenant).map((entry) => entry.user))
     );
   });
@@ -229,7 +256,8 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
           scope: validation.request.scope.join(" "),
           state: validation.request.state ?? "",
           nonce: validation.request.nonce ?? "",
-          device_id: validation.request.deviceId ?? ""
+          device_id: validation.request.deviceId ?? "",
+          acr_values: acrValuesFromRequest(validation.request)
         }, login.description, listEffectiveUsers(config, tenant).map((entry) => entry.user)));
         return;
       }
@@ -595,8 +623,12 @@ function createDiscoveryDocument(config: AppConfig, tenant: MockTenant): Record<
       "roles",
       "sub",
       "tid",
-      "ver"
+      "ver",
+      "auth_level",
+      "auth_original_level",
+      "acr"
     ],
+    acr_values_supported: ["mfa", MFA_ACR],
     kerberos_endpoint: `${base}/${encodedTenantId}/kerberos`,
     tenant_region_scope: "NA",
     cloud_instance_name: "mock",
@@ -620,6 +652,7 @@ function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
       state?: string;
       nonce?: string;
       deviceId?: string;
+      acr?: string;
     };
   }
   | { ok: false; error: string; description?: string } {
@@ -658,6 +691,7 @@ function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
   if (!device.ok) {
     return { ok: false, error: "access_denied", description: device.description };
   }
+  const acr = requestedAcr(query.acr_values);
 
   return {
     ok: true,
@@ -668,7 +702,8 @@ function validateAuthorizeRequest(tenant: MockTenant, query: AuthorizeQuery):
       scope,
       state: emptyToUndefined(query.state),
       nonce: emptyToUndefined(query.nonce),
-      deviceId: device.deviceId
+      deviceId: device.deviceId,
+      acr
     }
   };
 }
@@ -696,6 +731,31 @@ function resolveRequestedDevice(
 }
 
 /**
+ * Extracts the supported step-up ACR from the authorize request.
+ */
+function requestedAcr(acrValues?: string): string | undefined {
+  const requested = acrValues ? parseScopes(acrValues) : [];
+  return requested.some((value) => MFA_ACR_ALIASES.has(value)) ? MFA_ACR : undefined;
+}
+
+/**
+ * Converts internal ACR state back into the authorize form field.
+ */
+function acrValuesFromRequest(request: ValidatedAuthorizeRequest): string {
+  return request.acr ?? "";
+}
+
+/**
+ * Checks whether the current authentication context satisfies the requested ACR.
+ */
+function satisfiesRequestedAcr(request: ValidatedAuthorizeRequest, auth: AuthContext): boolean {
+  if (request.acr !== MFA_ACR) {
+    return true;
+  }
+  return auth.level === "mfa" || auth.originalLevel === "mfa";
+}
+
+/**
  * Redirects to the client callback with a newly created authorization code.
  */
 function redirectWithCode(
@@ -703,7 +763,7 @@ function redirectWithCode(
   oidcState: OidcState,
   tenantId: string,
   client: MockClient,
-  request: { redirectUri: string; scope: string[]; state?: string; nonce?: string; deviceId?: string },
+  request: { redirectUri: string; scope: string[]; state?: string; nonce?: string; deviceId?: string; acr?: string },
   userSub: string,
   auth: AuthContext
 ): void {
@@ -717,7 +777,7 @@ function createCodeRedirectUrl(
   oidcState: OidcState,
   tenantId: string,
   client: MockClient,
-  request: { redirectUri: string; scope: string[]; state?: string; nonce?: string; deviceId?: string },
+  request: { redirectUri: string; scope: string[]; state?: string; nonce?: string; deviceId?: string; acr?: string },
   userSub: string,
   auth: AuthContext
 ): string {
@@ -729,7 +789,8 @@ function createCodeRedirectUrl(
       scope: request.scope,
       state: request.state,
       nonce: request.nonce,
-      deviceId: request.deviceId
+      deviceId: request.deviceId,
+      acr: request.acr
     },
     userSub,
     auth
@@ -757,19 +818,22 @@ function handleMfaLoginStep(args: {
   config: AppConfig;
   auth: AuthContext;
 }): { complete: true; auth: AuthContext } | { complete: false } {
-  const mfaEnabled = args.tenant.twoFactorEnabled || args.tenant.twoFactorMandatory;
+  const mfaRequiredByRequest = args.validation.request.acr === MFA_ACR && !satisfiesRequestedAcr(args.validation.request, args.auth);
+  const mfaEnabled = mfaRequiredByRequest || args.tenant.twoFactorEnabled || args.tenant.twoFactorMandatory;
   if (!mfaEnabled) {
     return { complete: true, auth: args.auth };
   }
 
   const params = authorizeParamsFromRequest(args.validation.client, args.validation.request);
-  const action = readString(args.req.body.mfa_action);
-  const code = readString(args.req.body.mfa_code);
+  const body = args.req.body && typeof args.req.body === "object" ? args.req.body as Record<string, unknown> : {};
+  const action = readString(body.mfa_action);
+  const code = readString(body.mfa_code);
   const enrolled = args.mfaStore.isEnrolled(args.tenant.tenantId, args.user.sub);
 
   if (args.challenge) {
     // Existing challenge means the user is choosing, setting up, or verifying MFA.
-    if (action === "continue" && !args.tenant.twoFactorMandatory && !enrolled) {
+    const challengeRequiresMfa = args.validation.request.acr === MFA_ACR && !satisfiesRequestedAcr(args.validation.request, args.challenge.auth);
+    if (action === "continue" && !challengeRequiresMfa && !args.tenant.twoFactorMandatory && !enrolled) {
       return { complete: true, auth: args.challenge.auth };
     }
 
@@ -795,7 +859,7 @@ function handleMfaLoginStep(args: {
             accountName: args.user.preferred_username,
             secret
           }),
-          mandatory: args.tenant.twoFactorMandatory
+          mandatory: args.tenant.twoFactorMandatory || challengeRequiresMfa
         }));
         return { complete: false };
       }
@@ -820,7 +884,7 @@ function handleMfaLoginStep(args: {
             accountName: args.user.preferred_username,
             secret
           }),
-          mandatory: args.tenant.twoFactorMandatory,
+          mandatory: args.tenant.twoFactorMandatory || challengeRequiresMfa,
           error: "Authenticator code is invalid"
         }));
         return { complete: false };
@@ -844,7 +908,7 @@ function handleMfaLoginStep(args: {
         auth: args.challenge.auth
       }, args.sessionSecret),
       params,
-      mandatory: args.tenant.twoFactorMandatory,
+      mandatory: args.tenant.twoFactorMandatory || challengeRequiresMfa,
       error: enrolled ? "Authenticator code is invalid" : "Choose a two-factor option to continue"
     }));
     return { complete: false };
@@ -865,7 +929,7 @@ function handleMfaLoginStep(args: {
     return { complete: false };
   }
 
-  if (args.tenant.twoFactorMandatory) {
+  if (args.tenant.twoFactorMandatory || mfaRequiredByRequest) {
     const secret = createTotpSecret();
     args.res.type("html").send(renderMfaPage(args.tenant, {
       mode: "setup",
@@ -942,7 +1006,8 @@ function authorizeParamsFromRequest(client: MockClient, request: ValidatedAuthor
     scope: request.scope.join(" "),
     state: request.state ?? "",
     nonce: request.nonce ?? "",
-    device_id: request.deviceId ?? ""
+    device_id: request.deviceId ?? "",
+    acr_values: acrValuesFromRequest(request)
   };
 }
 
@@ -1100,7 +1165,8 @@ function isValidatedAuthorizeRequest(value: unknown): value is ValidatedAuthoriz
     request.scope.every((scope) => typeof scope === "string") &&
     (request.state === undefined || typeof request.state === "string") &&
     (request.nonce === undefined || typeof request.nonce === "string") &&
-    (request.deviceId === undefined || typeof request.deviceId === "string");
+    (request.deviceId === undefined || typeof request.deviceId === "string") &&
+    (request.acr === undefined || request.acr === MFA_ACR);
 }
 
 /**
@@ -1175,6 +1241,7 @@ async function handleAuthorizationCodeGrant(args: {
       authOriginalLevel: entry.authOriginalLevel,
       nonce: entry.nonce,
       deviceId: entry.deviceId,
+      acr: entry.acr,
       expiresAt: refreshTokenExpiresAt
     })
     : undefined;
@@ -1190,6 +1257,7 @@ async function handleAuthorizationCodeGrant(args: {
     auth: authContext(entry.authLevel, entry.authOriginalLevel),
     nonce: entry.nonce,
     deviceId: entry.deviceId,
+    acr: entry.acr,
     refreshToken,
     refreshTokenExpiresAt: refreshToken ? refreshTokenExpiresAt : undefined
   });
@@ -1274,6 +1342,7 @@ async function handleRefreshTokenGrant(args: {
       authOriginalLevel: entry.authOriginalLevel,
       nonce: entry.nonce,
       deviceId: entry.deviceId,
+      acr: entry.acr,
       expiresAt: refreshTokenExpiresAt
     });
   }
@@ -1289,6 +1358,7 @@ async function handleRefreshTokenGrant(args: {
     auth: authContext(entry.authLevel, entry.authOriginalLevel),
     nonce: entry.nonce,
     deviceId: entry.deviceId,
+    acr: entry.acr,
     refreshToken,
     refreshTokenExpiresAt
   });
@@ -1314,6 +1384,7 @@ async function sendTokenSet(
     user: MockUser;
     scope: string[];
     auth: AuthContext;
+    acr?: string;
     nonce?: string;
     deviceId?: string;
     refreshToken?: string;
@@ -1328,6 +1399,7 @@ async function sendTokenSet(
     user: args.user,
     scope: args.scope,
     auth: args.auth,
+    acr: args.acr,
     nonce: args.nonce,
     deviceId: args.deviceId
   };

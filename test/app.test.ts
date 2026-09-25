@@ -1091,6 +1091,77 @@ describe("Azure OIDC mock", () => {
     }
   });
 
+  it("performs MFA step-up when a client requests the MFA ACR after cookie login", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-mfa-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      const mfaStore = new MfaStore(path.join(dir, "mfa.json"));
+      const secret = "JBSWY3DPEHPK3PXP";
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      mfaStore.enrollTotp("common", "user-1", secret);
+      const app = createApp({
+        config: secureConfig(),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath),
+        mfaStore,
+        sessionSecret: "mfa-step-up-secret"
+      });
+      const agent = request.agent(app);
+
+      await agent
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(302);
+
+      const silentStepUp = await agent
+        .get("/common/oauth2/v2.0/authorize")
+        .query({ ...authorizeQuery(), prompt: "none", acr_values: "mfa" })
+        .expect(302);
+      expect(new URL(silentStepUp.header.location).searchParams.get("error")).toBe("interaction_required");
+
+      const verify = await agent
+        .get("/common/oauth2/v2.0/authorize")
+        .query({ ...authorizeQuery(), state: "step-up", acr_values: "mfa" })
+        .expect(200);
+      expect(verify.text).toContain("Authenticator Code");
+
+      const login = await agent
+        .post("/common/login")
+        .type("form")
+        .send({
+          ...authorizeQuery(),
+          state: "step-up",
+          acr_values: "mfa",
+          mfa_challenge: extractInputValue(verify.text, "mfa_challenge"),
+          mfa_action: "verify",
+          mfa_code: createTotpCode(secret)
+        })
+        .expect(302);
+      const code = new URL(login.header.location).searchParams.get("code");
+
+      const token = await agent
+        .post("/common/oauth2/v2.0/token")
+        .type("form")
+        .send({
+          grant_type: "authorization_code",
+          client_id: "local-app",
+          client_secret: "local-secret",
+          code,
+          redirect_uri: "http://app.test/callback"
+        })
+        .expect(200);
+
+      const accessClaims = decodeJwt(token.body.access_token);
+      expect(accessClaims.auth_level).toBe("mfa");
+      expect(accessClaims.auth_original_level).toBe("mfa");
+      expect(accessClaims.acr).toBe("urn:az-oidc-mock:acr:mfa");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("lets an authorized internal caller set and remove secure tenant passwords", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-passwd-"));
     try {
