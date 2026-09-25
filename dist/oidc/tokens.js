@@ -17,6 +17,8 @@ const RESERVED_CLAIMS = new Set([
     "scp",
     "nonce",
     "deviceid",
+    "auth_level",
+    "auth_original_level",
     "client_info"
 ]);
 /**
@@ -40,6 +42,8 @@ export async function createIdToken(input) {
         preferred_username: input.user.preferred_username,
         email: input.user.email,
         roles: input.user.roles,
+        auth_level: input.auth.level,
+        auth_original_level: input.auth.originalLevel,
         ...customClaims(input.user.claims)
     };
     if (input.nonce) {
@@ -71,6 +75,8 @@ export async function createAccessToken(input) {
         preferred_username: input.user.preferred_username,
         scp: input.scope.filter((scope) => scope !== "openid").join(" "),
         roles: input.user.roles,
+        auth_level: input.auth.level,
+        auth_original_level: input.auth.originalLevel,
         ...(input.deviceId ? { deviceid: input.deviceId } : {}),
         ...customClaims(input.user.claims)
     }, input.keys);

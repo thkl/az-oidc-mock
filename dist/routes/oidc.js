@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { tenantIssuer } from "../config.js";
+import { authContext, isAuthLevel } from "../oidc/auth-level.js";
 import { createTotpSecret, createTotpUri, verifyTotpSecret } from "../oidc/mfa.js";
 import { createPasskeyChallenge, verifyPasskeyRegistration } from "../oidc/passkeys.js";
 import { clearSessionUser, getSessionUser, setSessionUser } from "../oidc/session.js";
@@ -67,9 +68,10 @@ export function registerOidcRoutes(app, context) {
                 context.logger.verbose(config, "authorize request satisfied from existing session", {
                     tenantId: tenant.tenantId,
                     clientId: validation.client.clientId,
-                    userSub: sessionUser.sub
+                    userSub: sessionUser.user.sub,
+                    authLevel: sessionUser.authLevel
                 });
-                redirectWithCode(res, context.state, tenant.tenantId, validation.client, validation.request, sessionUser.sub);
+                redirectWithCode(res, context.state, tenant.tenantId, validation.client, validation.request, sessionUser.user.sub, authContext("cookie", sessionUser.authLevel));
                 return;
             }
         }
@@ -127,7 +129,8 @@ export function registerOidcRoutes(app, context) {
                     state: context.state,
                     sessionSecret: context.sessionSecret,
                     logger: context.logger,
-                    config
+                    config,
+                    auth: passkeyChallenge.auth
                 });
                 return;
             }
@@ -166,7 +169,8 @@ export function registerOidcRoutes(app, context) {
             sessionSecret: context.sessionSecret,
             mfaStore: context.mfaStore,
             challenge,
-            config
+            config,
+            auth: login.auth
         });
         if (!mfa.complete) {
             return;
@@ -176,7 +180,8 @@ export function registerOidcRoutes(app, context) {
             const passkeyChallengeValue = createPasskeyLoginChallenge({
                 tenantId: tenant.tenantId,
                 userSub: login.user.user.sub,
-                request: validation.request
+                request: validation.request,
+                auth: mfa.auth
             }, context.sessionSecret);
             res.type("html").send(renderPasskeyPage(tenant, {
                 challenge: passkeyChallengeValue,
@@ -194,7 +199,8 @@ export function registerOidcRoutes(app, context) {
             state: context.state,
             sessionSecret: context.sessionSecret,
             logger: context.logger,
-            config
+            config,
+            auth: mfa.auth
         });
     });
     /**
@@ -279,7 +285,7 @@ export function registerOidcRoutes(app, context) {
             res.status(400).json({ error: "invalid_request", error_description: "Passkey client is no longer available" });
             return;
         }
-        const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub);
+        const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub, token.auth);
         res.json({ redirect });
     });
     /**
@@ -305,6 +311,7 @@ export function registerOidcRoutes(app, context) {
             tenantId: tenant.tenantId,
             userSub: user.user.sub,
             request: validation.request,
+            auth: authContext("passkey"),
             webauthnChallenge
         }, context.sessionSecret);
         res.json({
@@ -357,7 +364,7 @@ export function registerOidcRoutes(app, context) {
             res.status(400).json({ error: "invalid_request", error_description: "Passkey client is no longer available" });
             return;
         }
-        const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub);
+        const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub, authContext("passkey"));
         res.json({ redirect });
     });
     /**
@@ -571,13 +578,13 @@ function resolveRequestedDevice(tenant, requestedDeviceId) {
 /**
  * Redirects to the client callback with a newly created authorization code.
  */
-function redirectWithCode(res, oidcState, tenantId, client, request, userSub) {
-    res.redirect(createCodeRedirectUrl(oidcState, tenantId, client, request, userSub));
+function redirectWithCode(res, oidcState, tenantId, client, request, userSub, auth) {
+    res.redirect(createCodeRedirectUrl(oidcState, tenantId, client, request, userSub, auth));
 }
 /**
  * Creates the authorization-code callback URL without writing to the response.
  */
-function createCodeRedirectUrl(oidcState, tenantId, client, request, userSub) {
+function createCodeRedirectUrl(oidcState, tenantId, client, request, userSub, auth) {
     const code = oidcState.createCode({
         tenantId,
         clientId: client.clientId,
@@ -586,7 +593,7 @@ function createCodeRedirectUrl(oidcState, tenantId, client, request, userSub) {
         state: request.state,
         nonce: request.nonce,
         deviceId: request.deviceId
-    }, userSub);
+    }, userSub, auth);
     const redirectUrl = new URL(request.redirectUri);
     redirectUrl.searchParams.set("code", code);
     if (request.state) {
@@ -600,7 +607,7 @@ function createCodeRedirectUrl(oidcState, tenantId, client, request, userSub) {
 function handleMfaLoginStep(args) {
     const mfaEnabled = args.tenant.twoFactorEnabled || args.tenant.twoFactorMandatory;
     if (!mfaEnabled) {
-        return { complete: true };
+        return { complete: true, auth: args.auth };
     }
     const params = authorizeParamsFromRequest(args.validation.client, args.validation.request);
     const action = readString(args.req.body.mfa_action);
@@ -609,7 +616,7 @@ function handleMfaLoginStep(args) {
     if (args.challenge) {
         // Existing challenge means the user is choosing, setting up, or verifying MFA.
         if (action === "continue" && !args.tenant.twoFactorMandatory && !enrolled) {
-            return { complete: true };
+            return { complete: true, auth: args.challenge.auth };
         }
         if (action === "setup") {
             const secret = args.challenge.setupSecret ?? createTotpSecret();
@@ -619,6 +626,7 @@ function handleMfaLoginStep(args) {
                     tenantId: args.tenant.tenantId,
                     userSub: args.user.sub,
                     request: args.validation.request,
+                    auth: args.challenge.auth,
                     setupSecret: secret
                 }, args.sessionSecret);
                 args.res.type("html").send(renderMfaPage(args.tenant, {
@@ -642,6 +650,7 @@ function handleMfaLoginStep(args) {
                     tenantId: args.tenant.tenantId,
                     userSub: args.user.sub,
                     request: args.validation.request,
+                    auth: args.challenge.auth,
                     setupSecret: secret
                 }, args.sessionSecret);
                 args.res.type("html").status(401).send(renderMfaPage(args.tenant, {
@@ -661,18 +670,19 @@ function handleMfaLoginStep(args) {
                 return { complete: false };
             }
             args.mfaStore.enrollTotp(args.tenant.tenantId, args.user.sub, secret);
-            return { complete: true };
+            return { complete: true, auth: authContext("mfa") };
         }
         // Enrolled users must provide a valid TOTP code before login can continue.
         if (action === "verify" && code && args.mfaStore.verifyTotp(args.tenant.tenantId, args.user.sub, code)) {
-            return { complete: true };
+            return { complete: true, auth: authContext("mfa") };
         }
         args.res.type("html").status(401).send(renderMfaPage(args.tenant, {
             mode: enrolled ? "verify" : "choose",
             challenge: createMfaChallenge({
                 tenantId: args.tenant.tenantId,
                 userSub: args.user.sub,
-                request: args.validation.request
+                request: args.validation.request,
+                auth: args.challenge.auth
             }, args.sessionSecret),
             params,
             mandatory: args.tenant.twoFactorMandatory,
@@ -687,7 +697,8 @@ function handleMfaLoginStep(args) {
             challenge: createMfaChallenge({
                 tenantId: args.tenant.tenantId,
                 userSub: args.user.sub,
-                request: args.validation.request
+                request: args.validation.request,
+                auth: args.auth
             }, args.sessionSecret),
             params
         }));
@@ -701,6 +712,7 @@ function handleMfaLoginStep(args) {
                 tenantId: args.tenant.tenantId,
                 userSub: args.user.sub,
                 request: args.validation.request,
+                auth: args.auth,
                 setupSecret: secret
             }, args.sessionSecret),
             params,
@@ -720,7 +732,8 @@ function handleMfaLoginStep(args) {
         challenge: createMfaChallenge({
             tenantId: args.tenant.tenantId,
             userSub: args.user.sub,
-            request: args.validation.request
+            request: args.validation.request,
+            auth: args.auth
         }, args.sessionSecret),
         params,
         mandatory: false
@@ -732,14 +745,16 @@ function handleMfaLoginStep(args) {
  */
 function completeLogin(args) {
     if (args.tenant.enableSessions) {
-        setSessionUser(args.req, args.res, args.config, args.tenant, args.user.sub, args.sessionSecret);
+        setSessionUser(args.req, args.res, args.config, args.tenant, args.user.sub, args.auth.originalLevel, args.sessionSecret);
     }
     args.logger.info("mock user selected", {
         tenantId: args.tenant.tenantId,
         clientId: args.validation.client.clientId,
-        userSub: args.user.sub
+        userSub: args.user.sub,
+        authLevel: args.auth.level,
+        authOriginalLevel: args.auth.originalLevel
     });
-    redirectWithCode(args.res, args.state, args.tenant.tenantId, args.validation.client, args.validation.request, args.user.sub);
+    redirectWithCode(args.res, args.state, args.tenant.tenantId, args.validation.client, args.validation.request, args.user.sub, args.auth);
 }
 /**
  * Converts a validated authorize request back into hidden login form fields.
@@ -763,7 +778,7 @@ function authenticateMfaChallengeUser(config, tenant, challenge) {
         return { ok: false, description: "Two-factor challenge is invalid or expired" };
     }
     const user = resolveEffectiveUser(config, tenant, challenge.userSub);
-    return user ? { ok: true, user } : { ok: false, description: "User no longer exists" };
+    return user ? { ok: true, user, auth: challenge.auth } : { ok: false, description: "User no longer exists" };
 }
 /**
  * Signs the transient MFA state carried through login form posts.
@@ -798,6 +813,7 @@ function verifyMfaChallenge(value, tenantId, sessionSecret) {
             typeof decoded.userSub !== "string" ||
             typeof decoded.expiresAt !== "number" ||
             decoded.expiresAt <= Date.now() ||
+            !isAuthContext(decoded.auth) ||
             !isValidatedAuthorizeRequest(decoded.request)) {
             return undefined;
         }
@@ -843,6 +859,7 @@ function verifyPasskeyChallenge(value, tenantId, sessionSecret) {
             typeof decoded.userSub !== "string" ||
             typeof decoded.expiresAt !== "number" ||
             decoded.expiresAt <= Date.now() ||
+            !isAuthContext(decoded.auth) ||
             (decoded.webauthnChallenge !== undefined && typeof decoded.webauthnChallenge !== "string") ||
             !isValidatedAuthorizeRequest(decoded.request)) {
             return undefined;
@@ -865,6 +882,16 @@ function passkeyOrigin(config) {
  */
 function passkeyRpId(config) {
     return new URL(config.baseUrl).hostname;
+}
+/**
+ * Validates decoded authentication context stored in signed login challenges.
+ */
+function isAuthContext(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return false;
+    }
+    const auth = value;
+    return isAuthLevel(auth.level) && isAuthLevel(auth.originalLevel);
 }
 /**
  * Validates decoded challenge state before trusting it as an authorize request.
@@ -935,6 +962,8 @@ async function handleAuthorizationCodeGrant(args) {
             clientId: args.client.clientId,
             userSub: resolvedUser.user.sub,
             scope: entry.scope,
+            authLevel: entry.authLevel,
+            authOriginalLevel: entry.authOriginalLevel,
             nonce: entry.nonce,
             deviceId: entry.deviceId,
             expiresAt: refreshTokenExpiresAt
@@ -948,6 +977,7 @@ async function handleAuthorizationCodeGrant(args) {
         client: args.client,
         user: resolvedUser.user,
         scope: entry.scope,
+        auth: authContext(entry.authLevel, entry.authOriginalLevel),
         nonce: entry.nonce,
         deviceId: entry.deviceId,
         refreshToken,
@@ -1016,6 +1046,8 @@ async function handleRefreshTokenGrant(args) {
             clientId: entry.clientId,
             userSub: entry.userSub,
             scope: entry.scope,
+            authLevel: entry.authLevel,
+            authOriginalLevel: entry.authOriginalLevel,
             nonce: entry.nonce,
             deviceId: entry.deviceId,
             expiresAt: refreshTokenExpiresAt
@@ -1029,6 +1061,7 @@ async function handleRefreshTokenGrant(args) {
         client: args.client,
         user: resolvedUser.user,
         scope: entry.scope,
+        auth: authContext(entry.authLevel, entry.authOriginalLevel),
         nonce: entry.nonce,
         deviceId: entry.deviceId,
         refreshToken,
@@ -1052,6 +1085,7 @@ async function sendTokenSet(res, args) {
         client: args.client,
         user: args.user,
         scope: args.scope,
+        auth: args.auth,
         nonce: args.nonce,
         deviceId: args.deviceId
     };
@@ -1121,7 +1155,7 @@ function authenticateLogin(config, tenant, req, passwordStore) {
         // Non-secure tenants intentionally trust the selected mock user.
         const userSub = readString(req.body.user_sub);
         const user = userSub ? resolveEffectiveUser(config, tenant, userSub) : undefined;
-        return user ? { ok: true, user } : { ok: false, description: "Unknown user" };
+        return user ? { ok: true, user, auth: authContext("mock") } : { ok: false, description: "Unknown user" };
     }
     // Secure tenants verify the password against the source tenant for shared users.
     const username = readString(req.body.username)?.toLowerCase();
@@ -1133,7 +1167,7 @@ function authenticateLogin(config, tenant, req, passwordStore) {
     if (!user || !passwordStore.verify(user.homeTenant.tenantId, user.user.sub, password)) {
         return { ok: false, description: "Invalid email or password" };
     }
-    return { ok: true, user };
+    return { ok: true, user, auth: authContext("password") };
 }
 /**
  * Collects the tenant's advertised scopes from every configured client.

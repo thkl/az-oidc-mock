@@ -1,6 +1,7 @@
 import { createLocalJWKSet, errors, jwtVerify, SignJWT, type JWTPayload } from "jose";
 import type { AppConfig, MockClient, MockTenant, MockUser } from "../config.js";
 import { tenantIssuer } from "../config.js";
+import type { AuthContext } from "./auth-level.js";
 import type { SigningKeys } from "./keys.js";
 
 const RESERVED_CLAIMS = new Set([
@@ -20,6 +21,8 @@ const RESERVED_CLAIMS = new Set([
   "scp",
   "nonce",
   "deviceid",
+  "auth_level",
+  "auth_original_level",
   "client_info"
 ]);
 
@@ -33,6 +36,7 @@ export type TokenSetInput = {
   client: MockClient;
   user: MockUser;
   scope: string[];
+  auth: AuthContext;
   nonce?: string;
   deviceId?: string;
 };
@@ -70,6 +74,8 @@ export async function createIdToken(input: TokenSetInput): Promise<string> {
     preferred_username: input.user.preferred_username,
     email: input.user.email,
     roles: input.user.roles,
+    auth_level: input.auth.level,
+    auth_original_level: input.auth.originalLevel,
     ...customClaims(input.user.claims)
   };
 
@@ -105,6 +111,8 @@ export async function createAccessToken(input: TokenSetInput): Promise<string> {
       preferred_username: input.user.preferred_username,
       scp: input.scope.filter((scope) => scope !== "openid").join(" "),
       roles: input.user.roles,
+      auth_level: input.auth.level,
+      auth_original_level: input.auth.originalLevel,
       ...(input.deviceId ? { deviceid: input.deviceId } : {}),
       ...customClaims(input.user.claims)
     },

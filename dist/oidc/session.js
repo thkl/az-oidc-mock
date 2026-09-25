@@ -1,19 +1,24 @@
 import crypto from "node:crypto";
+import { isAuthLevel } from "./auth-level.js";
 import { resolveEffectiveUser } from "./users.js";
 /**
  * Reads and verifies the tenant-scoped login session cookie.
  */
 export function getSessionUser(req, config, tenant, sessionSecret) {
     const cookie = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
-    const userSub = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
-    return userSub ? resolveEffectiveUser(config, tenant, userSub)?.user : undefined;
+    const session = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
+    if (!session) {
+        return undefined;
+    }
+    const user = resolveEffectiveUser(config, tenant, session.userSub)?.user;
+    return user ? { user, authLevel: session.authLevel } : undefined;
 }
 /**
  * Issues a signed HTTP-only login session cookie for the tenant.
  */
-export function setSessionUser(req, res, config, tenant, userSub, sessionSecret) {
+export function setSessionUser(req, res, config, tenant, userSub, authLevel, sessionSecret) {
     const maxAge = tenant.sessionLifetimeSeconds * 1000;
-    res.cookie(`az_oidc_mock_${tenant.tenantId}`, createSessionCookie(tenant.tenantId, userSub, Date.now() + maxAge, sessionSecret), {
+    res.cookie(`az_oidc_mock_${tenant.tenantId}`, createSessionCookie(tenant.tenantId, userSub, authLevel, Date.now() + maxAge, sessionSecret), {
         httpOnly: true,
         sameSite: "lax",
         secure: isSecureRequest(req, config),
@@ -61,13 +66,13 @@ function parseCookies(header) {
 /**
  * Creates the signed cookie payload that stores tenant, subject, and expiry.
  */
-function createSessionCookie(tenantId, userSub, expiresAt, sessionSecret) {
-    const payload = base64UrlJson({ tenantId, userSub, expiresAt });
+function createSessionCookie(tenantId, userSub, authLevel, expiresAt, sessionSecret) {
+    const payload = base64UrlJson({ tenantId, userSub, authLevel, expiresAt });
     const signature = signSessionPayload(payload, sessionSecret);
     return `v1.${payload}.${signature}`;
 }
 /**
- * Verifies the signed session cookie and returns the user subject when valid.
+ * Verifies the signed session cookie and returns its user and original auth level when valid.
  */
 function verifySessionCookie(cookie, tenantId, sessionSecret) {
     const [version, payload, signature] = cookie.split(".");
@@ -86,7 +91,10 @@ function verifySessionCookie(cookie, tenantId, sessionSecret) {
         decoded.expiresAt <= Date.now()) {
         return undefined;
     }
-    return decoded.userSub;
+    return {
+        userSub: decoded.userSub,
+        authLevel: isAuthLevel(decoded.authLevel) ? decoded.authLevel : "cookie"
+    };
 }
 /**
  * Signs a session payload with the shared session secret.

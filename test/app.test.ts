@@ -552,6 +552,10 @@ describe("Azure OIDC mock", () => {
     expect(token.body.refresh_token).toBeTruthy();
     expect(token.body.refresh_token_expires_in).toBeGreaterThan(0);
     expect(token.body.refresh_token_expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    expect(decodeJwt(token.body.access_token).auth_level).toBe("mock");
+    expect(decodeJwt(token.body.access_token).auth_original_level).toBe("mock");
+    expect(decodeJwt(token.body.id_token).auth_level).toBe("mock");
+    expect(decodeJwt(token.body.id_token).auth_original_level).toBe("mock");
   });
 
   it("uses email and password login for secure tenants and reuses the session cookie", async () => {
@@ -596,8 +600,23 @@ describe("Azure OIDC mock", () => {
         .query({ ...authorizeQuery(), state: "state-2" })
         .expect(302);
       const callback = new URL(silentLogin.header.location);
-      expect(callback.searchParams.get("code")).toBeTruthy();
+      const code = callback.searchParams.get("code");
+      expect(code).toBeTruthy();
       expect(callback.searchParams.get("state")).toBe("state-2");
+
+      const token = await agent
+        .post("/common/oauth2/v2.0/token")
+        .type("form")
+        .send({
+          grant_type: "authorization_code",
+          client_id: "local-app",
+          client_secret: "local-secret",
+          code,
+          redirect_uri: "http://app.test/callback"
+        })
+        .expect(200);
+      expect(decodeJwt(token.body.access_token).auth_level).toBe("cookie");
+      expect(decodeJwt(token.body.access_token).auth_original_level).toBe("password");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -1333,6 +1352,8 @@ describe("Azure OIDC mock", () => {
     expect(refreshed.body.refresh_token).not.toBe(first.body.refresh_token);
     expect(refreshed.body.refresh_token_expires_in).toBeGreaterThan(0);
     expect(refreshed.body.refresh_token_expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    expect(decodeJwt(refreshed.body.access_token).auth_level).toBe("mock");
+    expect(decodeJwt(refreshed.body.access_token).auth_original_level).toBe("mock");
 
     await request(app)
       .post("/common/oauth2/v2.0/token")

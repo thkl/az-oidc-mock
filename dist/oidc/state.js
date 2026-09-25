@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isAuthLevel } from "./auth-level.js";
 /**
  * Stores short-lived mock authorization codes and refresh tokens.
  */
@@ -18,12 +19,14 @@ export class OidcState {
     /**
      * Creates a one-time authorization code for a validated authorization request.
      */
-    createCode(request, userSub) {
+    createCode(request, userSub, auth) {
         const code = randomToken();
         this.authorizationCodes.set(code, {
             ...request,
             code,
             userSub,
+            authLevel: auth.level,
+            authOriginalLevel: auth.originalLevel,
             expiresAt: Date.now() + 5 * 60 * 1000
         });
         return code;
@@ -82,8 +85,9 @@ export class OidcState {
         // Only valid, non-expired tokens are hydrated into memory.
         const now = Date.now();
         for (const token of parsed.refreshTokens) {
-            if (isRefreshToken(token) && token.expiresAt >= now) {
-                this.refreshTokens.set(token.token, token);
+            const normalized = normalizeRefreshToken(token);
+            if (normalized && normalized.expiresAt >= now) {
+                this.refreshTokens.set(normalized.token, normalized);
             }
         }
         this.saveRefreshTokens();
@@ -114,14 +118,14 @@ export class OidcState {
     }
 }
 /**
- * Validates a parsed refresh-token record before loading it from disk.
+ * Validates and normalizes a parsed refresh-token record before loading it from disk.
  */
-function isRefreshToken(value) {
+function normalizeRefreshToken(value) {
     if (!value || typeof value !== "object") {
-        return false;
+        return undefined;
     }
     const token = value;
-    return typeof token.token === "string" &&
+    if (!(typeof token.token === "string" &&
         typeof token.tenantId === "string" &&
         typeof token.clientId === "string" &&
         typeof token.userSub === "string" &&
@@ -129,7 +133,23 @@ function isRefreshToken(value) {
         token.scope.every((scope) => typeof scope === "string") &&
         (token.nonce === undefined || typeof token.nonce === "string") &&
         (token.deviceId === undefined || typeof token.deviceId === "string") &&
-        typeof token.expiresAt === "number";
+        (token.authLevel === undefined || isAuthLevel(token.authLevel)) &&
+        (token.authOriginalLevel === undefined || isAuthLevel(token.authOriginalLevel)) &&
+        typeof token.expiresAt === "number")) {
+        return undefined;
+    }
+    return {
+        token: token.token,
+        tenantId: token.tenantId,
+        clientId: token.clientId,
+        userSub: token.userSub,
+        authLevel: token.authLevel ?? "cookie",
+        authOriginalLevel: token.authOriginalLevel ?? token.authLevel ?? "cookie",
+        scope: token.scope,
+        nonce: token.nonce,
+        deviceId: token.deviceId,
+        expiresAt: token.expiresAt
+    };
 }
 /**
  * Creates an opaque URL-safe token value.

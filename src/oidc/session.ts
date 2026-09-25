@@ -1,23 +1,42 @@
 import type { Request, Response } from "express";
 import crypto from "node:crypto";
 import type { AppConfig, MockTenant, MockUser } from "../config.js";
+import type { AuthLevel } from "./auth-level.js";
+import { isAuthLevel } from "./auth-level.js";
 import { resolveEffectiveUser } from "./users.js";
+
+export type SessionUser = {
+  user: MockUser;
+  authLevel: AuthLevel;
+};
 
 /**
  * Reads and verifies the tenant-scoped login session cookie.
  */
-export function getSessionUser(req: Request, config: AppConfig, tenant: MockTenant, sessionSecret: string): MockUser | undefined {
+export function getSessionUser(req: Request, config: AppConfig, tenant: MockTenant, sessionSecret: string): SessionUser | undefined {
   const cookie = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
-  const userSub = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
-  return userSub ? resolveEffectiveUser(config, tenant, userSub)?.user : undefined;
+  const session = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
+  if (!session) {
+    return undefined;
+  }
+  const user = resolveEffectiveUser(config, tenant, session.userSub)?.user;
+  return user ? { user, authLevel: session.authLevel } : undefined;
 }
 
 /**
  * Issues a signed HTTP-only login session cookie for the tenant.
  */
-export function setSessionUser(req: Request, res: Response, config: AppConfig, tenant: MockTenant, userSub: string, sessionSecret: string): void {
+export function setSessionUser(
+  req: Request,
+  res: Response,
+  config: AppConfig,
+  tenant: MockTenant,
+  userSub: string,
+  authLevel: AuthLevel,
+  sessionSecret: string
+): void {
   const maxAge = tenant.sessionLifetimeSeconds * 1000;
-  res.cookie(`az_oidc_mock_${tenant.tenantId}`, createSessionCookie(tenant.tenantId, userSub, Date.now() + maxAge, sessionSecret), {
+  res.cookie(`az_oidc_mock_${tenant.tenantId}`, createSessionCookie(tenant.tenantId, userSub, authLevel, Date.now() + maxAge, sessionSecret), {
     httpOnly: true,
     sameSite: "lax",
     secure: isSecureRequest(req, config),
@@ -71,16 +90,16 @@ function parseCookies(header?: string): Record<string, string> {
 /**
  * Creates the signed cookie payload that stores tenant, subject, and expiry.
  */
-function createSessionCookie(tenantId: string, userSub: string, expiresAt: number, sessionSecret: string): string {
-  const payload = base64UrlJson({ tenantId, userSub, expiresAt });
+function createSessionCookie(tenantId: string, userSub: string, authLevel: AuthLevel, expiresAt: number, sessionSecret: string): string {
+  const payload = base64UrlJson({ tenantId, userSub, authLevel, expiresAt });
   const signature = signSessionPayload(payload, sessionSecret);
   return `v1.${payload}.${signature}`;
 }
 
 /**
- * Verifies the signed session cookie and returns the user subject when valid.
+ * Verifies the signed session cookie and returns its user and original auth level when valid.
  */
-function verifySessionCookie(cookie: string, tenantId: string, sessionSecret: string): string | undefined {
+function verifySessionCookie(cookie: string, tenantId: string, sessionSecret: string): { userSub: string; authLevel: AuthLevel } | undefined {
   const [version, payload, signature] = cookie.split(".");
   if (version !== "v1" || !payload || !signature) {
     return undefined;
@@ -101,7 +120,10 @@ function verifySessionCookie(cookie: string, tenantId: string, sessionSecret: st
   ) {
     return undefined;
   }
-  return decoded.userSub;
+  return {
+    userSub: decoded.userSub,
+    authLevel: isAuthLevel(decoded.authLevel) ? decoded.authLevel : "cookie"
+  };
 }
 
 /**

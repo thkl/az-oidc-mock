@@ -35,12 +35,12 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
       res.redirect(createAdminAuthorizeUrl(config).toString());
       return;
     }
-    if (!isAdminUser(sessionUser)) {
+    if (!isAdminUser(sessionUser.user)) {
       res.status(403).type("html").send(renderAdminSetupPage(adminAccessDescription(), createInternalTenantExample(config)));
       return;
     }
 
-    res.type("html").send(renderAdminPage(sessionUser));
+    res.type("html").send(renderAdminPage(sessionUser.user));
   });
 
   /**
@@ -76,7 +76,7 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
       return;
     }
 
-    setSessionUser(req, res, config, setup.tenant, resolvedUser.user.sub, context.sessionSecret);
+    setSessionUser(req, res, config, setup.tenant, resolvedUser.user.sub, entry.authOriginalLevel, context.sessionSecret);
     res.redirect("/internal/admin");
   });
 
@@ -332,14 +332,14 @@ function getAdminRequestUser(
     return { ok: false, status: 503, error: "admin_not_configured", description: setup.description };
   }
 
-  const user = getSessionUser(req, config, setup.tenant, sessionSecret);
-  if (!user) {
+  const sessionUser = getSessionUser(req, config, setup.tenant, sessionSecret);
+  if (!sessionUser) {
     return { ok: false, status: 401, error: "login_required", description: "Sign in with the internal tenant first" };
   }
-  if (!isAdminUser(user)) {
+  if (!isAdminUser(sessionUser.user)) {
     return { ok: false, status: 403, error: "forbidden", description: adminAccessDescription() };
   }
-  return { ok: true, user };
+  return { ok: true, user: sessionUser.user };
 }
 
 /**
