@@ -15,6 +15,11 @@ const ADMIN_ROLE = "internal-admin";
 const ADMIN_CLAIM = "internal_admin";
 const SECRET_MASK = "********";
 
+type UserAuthStatus = {
+  mfa: boolean;
+  passkey: boolean;
+};
+
 /**
  * Registers the authenticated admin web UI and its JSON mutation APIs.
  */
@@ -91,6 +96,7 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     }
     res.json({
       config: redactConfigSecrets(context.getConfig()),
+      authStatus: createAuthStatus(context.getConfig(), context),
       user: { sub: auth.user.sub, name: auth.user.name, email: auth.user.email },
       csrfToken: createAdminCsrfToken(auth.user, context.sessionSecret)
     });
@@ -121,7 +127,7 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
       const saved = saveConfig(context.configPath, mergeMaskedClientSecrets(context.getConfig(), nextConfig as AppConfig));
       context.onConfigSaved?.(saved);
       context.logger.info("admin config saved", { userSub: auth.user.sub, tenantCount: saved.tenants.length });
-      res.json({ config: redactConfigSecrets(saved) });
+      res.json({ config: redactConfigSecrets(saved), authStatus: createAuthStatus(saved, context) });
     } catch (error) {
       res.status(400).json({
         error: "invalid_config",
@@ -250,6 +256,22 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
     });
     res.json({ deleted, tenant_id: tenant.tenantId, user_sub: user.sub });
   });
+}
+
+/**
+ * Builds runtime security enrollment status for the admin UI without persisting it in config.
+ */
+function createAuthStatus(config: AppConfig, context: RouteContext): Record<string, Record<string, UserAuthStatus>> {
+  return Object.fromEntries(config.tenants.map((tenant) => [
+    tenant.tenantId,
+    Object.fromEntries(tenant.users.map((user) => [
+      user.sub,
+      {
+        mfa: context.mfaStore.isEnrolledForTenants([tenant.tenantId], user.sub),
+        passkey: context.passkeyStore.isEnrolled(tenant.tenantId, user.sub)
+      }
+    ]))
+  ]));
 }
 
 /**

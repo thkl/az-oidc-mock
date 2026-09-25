@@ -24,6 +24,12 @@ export class MfaStore {
         return Boolean(this.getTotpSecret(tenantId, userSub));
     }
     /**
+     * Checks candidate tenant keys plus a unique legacy subject-only match.
+     */
+    isEnrolledForTenants(tenantIds, userSub) {
+        return Boolean(this.getTotpSecretForTenants(tenantIds, userSub));
+    }
+    /**
      * Creates or replaces the TOTP enrollment for a user.
      */
     enrollTotp(tenantId, userSub, secret) {
@@ -71,6 +77,13 @@ export class MfaStore {
         return secret ? verifyTotpCode(secret, code, now) : false;
     }
     /**
+     * Verifies a TOTP code against candidate tenant keys plus a unique legacy subject-only match.
+     */
+    verifyTotpForTenants(tenantIds, userSub, code, now = Date.now()) {
+        const secret = this.getTotpSecretForTenants(tenantIds, userSub);
+        return secret ? verifyTotpCode(secret, code, now) : false;
+    }
+    /**
      * Reads a user's stored TOTP secret from memory or disk.
      */
     getTotpSecret(tenantId, userSub) {
@@ -80,10 +93,26 @@ export class MfaStore {
         return this.readRecords().find((record) => record.tenantId === tenantId && record.userSub === userSub)?.secret;
     }
     /**
+     * Finds a user's TOTP secret by preferred tenant keys, then a unique legacy subject match.
+     */
+    getTotpSecretForTenants(tenantIds, userSub) {
+        const records = this.readRecords();
+        const candidates = new Set(tenantIds);
+        const exact = records.find((record) => candidates.has(record.tenantId) && record.userSub === userSub);
+        if (exact) {
+            return exact.secret;
+        }
+        const subjectMatches = records.filter((record) => record.userSub === userSub);
+        return subjectMatches.length === 1 ? subjectMatches[0].secret : undefined;
+    }
+    /**
      * Reads and validates TOTP enrollment records from disk.
      */
     readRecords() {
-        if (!this.storePath || !fs.existsSync(this.storePath)) {
+        if (!this.storePath) {
+            return [...this.memory.values()];
+        }
+        if (!fs.existsSync(this.storePath)) {
             return [];
         }
         try {

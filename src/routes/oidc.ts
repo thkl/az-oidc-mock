@@ -834,8 +834,9 @@ function handleMfaLoginStep(args: {
   const action = readString(body.mfa_action);
   const code = readString(body.mfa_code);
   const mfaTenantId = args.user.homeTenant.tenantId;
+  const mfaTenantIds = [...new Set([mfaTenantId, args.tenant.tenantId])];
   const user = args.user.user;
-  const enrolled = args.mfaStore.isEnrolled(mfaTenantId, user.sub);
+  const enrolled = args.mfaStore.isEnrolledForTenants(mfaTenantIds, user.sub);
 
   if (args.challenge) {
     // Existing challenge means the user is choosing, setting up, or verifying MFA.
@@ -902,7 +903,7 @@ function handleMfaLoginStep(args: {
     }
 
     // Enrolled users must provide a valid TOTP code before login can continue.
-    if (action === "verify" && code && args.mfaStore.verifyTotp(mfaTenantId, user.sub, code)) {
+    if (action === "verify" && code && args.mfaStore.verifyTotpForTenants(mfaTenantIds, user.sub, code)) {
       return { complete: true, auth: authContext("mfa") };
     }
 

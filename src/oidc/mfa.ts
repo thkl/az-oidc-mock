@@ -34,6 +34,13 @@ export class MfaStore {
   }
 
   /**
+   * Checks candidate tenant keys plus a unique legacy subject-only match.
+   */
+  isEnrolledForTenants(tenantIds: string[], userSub: string): boolean {
+    return Boolean(this.getTotpSecretForTenants(tenantIds, userSub));
+  }
+
+  /**
    * Creates or replaces the TOTP enrollment for a user.
    */
   enrollTotp(tenantId: string, userSub: string, secret: string): void {
@@ -85,6 +92,14 @@ export class MfaStore {
   }
 
   /**
+   * Verifies a TOTP code against candidate tenant keys plus a unique legacy subject-only match.
+   */
+  verifyTotpForTenants(tenantIds: string[], userSub: string, code: string, now = Date.now()): boolean {
+    const secret = this.getTotpSecretForTenants(tenantIds, userSub);
+    return secret ? verifyTotpCode(secret, code, now) : false;
+  }
+
+  /**
    * Reads a user's stored TOTP secret from memory or disk.
    */
   private getTotpSecret(tenantId: string, userSub: string): string | undefined {
@@ -96,10 +111,28 @@ export class MfaStore {
   }
 
   /**
+   * Finds a user's TOTP secret by preferred tenant keys, then a unique legacy subject match.
+   */
+  private getTotpSecretForTenants(tenantIds: string[], userSub: string): string | undefined {
+    const records = this.readRecords();
+    const candidates = new Set(tenantIds);
+    const exact = records.find((record) => candidates.has(record.tenantId) && record.userSub === userSub);
+    if (exact) {
+      return exact.secret;
+    }
+
+    const subjectMatches = records.filter((record) => record.userSub === userSub);
+    return subjectMatches.length === 1 ? subjectMatches[0].secret : undefined;
+  }
+
+  /**
    * Reads and validates TOTP enrollment records from disk.
    */
   private readRecords(): MfaRecord[] {
-    if (!this.storePath || !fs.existsSync(this.storePath)) {
+    if (!this.storePath) {
+      return [...this.memory.values()];
+    }
+    if (!fs.existsSync(this.storePath)) {
       return [];
     }
 

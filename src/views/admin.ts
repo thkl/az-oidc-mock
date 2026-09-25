@@ -216,6 +216,9 @@ export function renderAdminPage(user: MockUser): string {
     .row-button strong { font-weight: 440; }
     .row-button[aria-current="true"] { border-color: rgba(37, 99, 235, .42); background: var(--primary-soft); }
     .row-button small { color: var(--muted); overflow-wrap: anywhere; }
+    .badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+    .badge { display: inline-flex; align-items: center; min-height: 18px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 6px; color: var(--muted); background: var(--button-bg); font-size: 10px; line-height: 1.4; font-weight: 430; }
+    .badge.on { border-color: rgba(37, 99, 235, .38); color: var(--text); background: var(--primary-soft); }
     .checks { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
     .check { display: inline-flex; gap: 7px; align-items: center; color: var(--text); font-size: 12px; font-weight: 360; }
     .check input { width: 16px; min-height: 16px; }
@@ -486,6 +489,7 @@ export function renderAdminPage(user: MockUser): string {
       selectedUserIndex: 0,
       selectedShareUserKey: '',
       csrfToken: '',
+      authStatus: {},
       themeMode: localStorage.getItem('az_oidc_admin_theme') || 'system',
       status: { type: '', message: '' }
     };
@@ -502,6 +506,13 @@ export function renderAdminPage(user: MockUser): string {
         label: (user.name || user.preferred_username || user.sub) + ' - ' + (tenant.displayName || tenant.tenantId)
       })))
       : [];
+    // Reads the latest runtime 2FA/passkey status for a tenant user.
+    const userAuthStatus = (tenant, user) => state.authStatus?.[tenant?.tenantId]?.[user?.sub] || { mfa: false, passkey: false };
+    // Renders compact text badges so security state is visible without relying on color alone.
+    const renderAuthBadges = (tenant, user) => {
+      const status = userAuthStatus(tenant, user);
+      return \`<span class="badges" aria-label="Security enrollment"><span class="badge \${status.mfa ? 'on' : ''}">\${status.mfa ? '2FA set' : 'No 2FA'}</span><span class="badge \${status.passkey ? 'on' : ''}">\${status.passkey ? 'Passkey set' : 'No passkey'}</span></span>\`;
+    };
     // Re-renders the full admin app and rebinds handlers because the DOM is replaced.
     const render = () => {
       const tenant = selectedTenant();
@@ -574,7 +585,7 @@ export function renderAdminPage(user: MockUser): string {
       <section class="panel" aria-labelledby="users-title">
         <div class="panel-header"><h2 id="users-title">Users</h2><button type="button" data-action="add-user">Add User</button></div>
         <div class="panel-body split">
-          <div class="row-list">\${tenant.users.map((item, index) => \`<button class="row-button" type="button" data-action="select-user" data-index="\${index}" aria-current="\${index === state.selectedUserIndex}"><strong>\${escapeText(item.name || 'New user')}</strong><small>\${escapeText(item.preferred_username || item.email || item.sub)}</small></button>\`).join('')}</div>
+          <div class="row-list">\${tenant.users.map((item, index) => \`<button class="row-button" type="button" data-action="select-user" data-index="\${index}" aria-current="\${index === state.selectedUserIndex}"><strong>\${escapeText(item.name || 'New user')}</strong><small>\${escapeText(item.preferred_username || item.email || item.sub)}</small>\${renderAuthBadges(tenant, item)}</button>\`).join('')}</div>
           \${user ? renderUser(tenant, user) : '<div class="empty">Select or add a user.</div>'}
         </div>
       </section>\`;
@@ -596,6 +607,7 @@ export function renderAdminPage(user: MockUser): string {
     </div>\`;
     // Renders the selected user's editable fields and security actions.
     const renderUser = (tenant, user) => \`<div class="panel-body">
+      <div class="share-box"><strong>Security Enrollment</strong>\${renderAuthBadges(tenant, user)}</div>
       <div class="grid"><label>Subject <input data-field="user.sub" value="\${escapeText(user.sub)}"></label><label>Name <input data-field="user.name" value="\${escapeText(user.name)}"></label><label>Email <input data-field="user.email" type="email" value="\${escapeText(user.email)}"></label><label>Preferred Username <input data-field="user.preferred_username" value="\${escapeText(user.preferred_username)}"></label></div>
       <label>Roles <textarea data-field="user.rolesText" spellcheck="false">\${escapeText(user.rolesText || '')}</textarea></label>
       <label>Claims JSON <textarea data-field="user.claimsText" spellcheck="false">\${escapeText(user.claimsText || '{}')}</textarea></label>
@@ -692,6 +704,7 @@ export function renderAdminPage(user: MockUser): string {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error_description || 'Unable to load config');
         state.editable = decorate(payload.config);
+        state.authStatus = payload.authStatus || {};
         state.csrfToken = payload.csrfToken || '';
         state.selectedTenantId = state.editable.tenants[0]?.tenantId || '';
         state.selectedClientIndex = 0; state.selectedUserIndex = 0; state.selectedShareUserKey = '';
@@ -709,6 +722,7 @@ export function renderAdminPage(user: MockUser): string {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error_description || 'Unable to save config');
         state.editable = decorate(payload.config);
+        state.authStatus = payload.authStatus || state.authStatus;
         state.status = { type: 'ok', message: 'Configuration saved.' };
       } catch (error) {
         state.status = { type: 'error', message: error.message };
@@ -785,6 +799,7 @@ export function renderAdminPage(user: MockUser): string {
         const response = await fetch('/internal/admin/api/mfa', { method: 'DELETE', headers: adminJsonHeaders(), body: JSON.stringify({ tenant_id: tenant.tenantId, user_sub: user.sub }) });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error_description || 'Unable to reset 2FA');
+        setUserAuthStatus(tenant, user, { mfa: false });
         state.status = { type: 'ok', message: payload.deleted ? '2FA enrollment reset.' : 'No 2FA enrollment existed.' };
       } catch (error) {
         state.status = { type: 'error', message: error.message };
@@ -799,6 +814,7 @@ export function renderAdminPage(user: MockUser): string {
         const response = await fetch('/internal/admin/api/passkeys', { method: 'DELETE', headers: adminJsonHeaders(), body: JSON.stringify({ tenant_id: tenant.tenantId, user_sub: user.sub }) });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error_description || 'Unable to reset passkeys');
+        setUserAuthStatus(tenant, user, { passkey: false });
         state.status = { type: 'ok', message: payload.deleted ? 'Passkeys reset.' : 'No passkeys existed.' };
       } catch (error) {
         state.status = { type: 'error', message: error.message };
@@ -826,6 +842,11 @@ export function renderAdminPage(user: MockUser): string {
       tenant.sharedUsers = (tenant.sharedUsers || []).filter((entry) => !(entry.tenantId === reference.tenantId && entry.userSub === reference.userSub));
       if (checked) tenant.sharedUsers.push(reference);
       render();
+    };
+    // Updates runtime auth status after reset actions without waiting for a full reload.
+    const setUserAuthStatus = (tenant, user, patch) => {
+      state.authStatus[tenant.tenantId] = state.authStatus[tenant.tenantId] || {};
+      state.authStatus[tenant.tenantId][user.sub] = { ...userAuthStatus(tenant, user), ...patch };
     };
     // Adds JSON and CSRF headers required by admin mutation endpoints.
     const adminJsonHeaders = () => ({ 'content-type': 'application/json', 'x-csrf-token': state.csrfToken });

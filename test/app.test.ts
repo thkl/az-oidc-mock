@@ -427,6 +427,32 @@ describe("Azure OIDC mock", () => {
     expect(passkeyStore.isEnrolled("common", "user-1")).toBe(false);
   });
 
+  it("returns user 2FA and passkey setup status for the admin UI", async () => {
+    const mfaStore = new MfaStore();
+    const passkeyStore = new PasskeyStore();
+    mfaStore.enrollTotp("common", "user-1", "JBSWY3DPEHPK3PXP");
+    passkeyStore.add({
+      tenantId: "common",
+      userSub: "user-1",
+      credentialId: "credential-1",
+      publicKeyCose: "dummy",
+      counter: 0
+    });
+    const app = createApp({
+      config: adminConfig(),
+      keys,
+      logger: silentLogger,
+      mfaStore,
+      passkeyStore
+    });
+    const agent = request.agent(app);
+
+    await loginInternalAdmin(agent);
+    const api = await agent.get("/internal/admin/api/config").expect(200);
+
+    expect(api.body.authStatus.common["user-1"]).toEqual({ mfa: true, passkey: true });
+  });
+
   it("rejects admin UI mutations without the CSRF token", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-admin-"));
     try {
@@ -1157,6 +1183,55 @@ describe("Azure OIDC mock", () => {
       expect(accessClaims.auth_level).toBe("mfa");
       expect(accessClaims.auth_original_level).toBe("mfa");
       expect(accessClaims.acr).toBe("urn:az-oidc-mock:acr:mfa");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a unique legacy MFA enrollment when step-up is requested", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "az-oidc-mock-mfa-"));
+    try {
+      const passwdPath = path.join(dir, "passwd");
+      const mfaStore = new MfaStore(path.join(dir, "mfa.json"));
+      const secret = "JBSWY3DPEHPK3PXP";
+      await fs.writeFile(passwdPath, `common:user-1:${createPasswordHash("secret")}\n`, "utf8");
+      mfaStore.enrollTotp("legacy-tenant-key", "user-1", secret);
+      const app = createApp({
+        config: secureConfig(),
+        keys,
+        logger: silentLogger,
+        passwordStore: new PasswordStore(passwdPath),
+        mfaStore,
+        sessionSecret: "legacy-mfa-step-up-secret"
+      });
+      const agent = request.agent(app);
+
+      await agent
+        .post("/common/login")
+        .type("form")
+        .send({ ...authorizeQuery(), username: "alice@example.test", password: "secret" })
+        .expect(302);
+
+      const verify = await agent
+        .get("/common/oauth2/v2.0/authorize")
+        .query({ ...authorizeQuery(), state: "legacy-step-up", acr_values: "mfa" })
+        .expect(200);
+      expect(verify.text).toContain("Authenticator Code");
+      expect(verify.text).not.toContain("Two-factor authentication is required");
+
+      const login = await agent
+        .post("/common/login")
+        .type("form")
+        .send({
+          ...authorizeQuery(),
+          state: "legacy-step-up",
+          acr_values: "mfa",
+          mfa_challenge: extractInputValue(verify.text, "mfa_challenge"),
+          mfa_action: "verify",
+          mfa_code: createTotpCode(secret)
+        })
+        .expect(302);
+      expect(new URL(login.header.location).searchParams.get("code")).toBeTruthy();
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
