@@ -9,6 +9,7 @@ import { PasskeyStore } from "./oidc/passkeys.js";
 import { PasswordStore } from "./oidc/passwords.js";
 import { OidcState } from "./oidc/state.js";
 import { loadTlsOptions } from "./tls.js";
+import { loadOrCreateSessionSecret } from "./oidc/session.js";
 
 const configPath = process.env.CONFIG_PATH ?? "config.json";
 const refreshTokenStorePath = path.join(path.dirname(path.resolve(configPath)), "refresh-tokens.json");
@@ -16,7 +17,9 @@ const passwdPath = path.join(path.dirname(path.resolve(configPath)), "passwd");
 const passkeyStorePath = path.join(path.dirname(path.resolve(configPath)), "passkeys.json");
 const mfaStorePath = path.join(path.dirname(path.resolve(configPath)), "mfa.json");
 const adminToken = process.env.OIDC_MOCK_ADMIN_TOKEN;
-const sessionSecret = process.env.OIDC_MOCK_SESSION_SECRET;
+const sessionSecret = process.env.OIDC_MOCK_SESSION_SECRET ?? loadOrCreateSessionSecret(
+  path.join(path.dirname(path.resolve(configPath)), "session-secret")
+);
 let config = loadConfig(configPath);
 const keys = await createSigningKeys();
 const logger = createLogger();

@@ -357,13 +357,15 @@ Set `passkeysMandatory` to require passkey setup before the login can finish. Ma
 
 Passkey credentials are stored in `passkeys.json` next to the active config file, so they survive restarts when that config directory is persisted. The admin UI can reset a user's passkeys from the user editor. WebAuthn binds passkeys to the browser origin, so `baseUrl` must match the URL users open in the browser.
 
-Session cookies are signed. Set `OIDC_MOCK_SESSION_SECRET` to a strong shared value in Docker Swarm or any multi-replica deployment:
+Session cookies are signed. By default, the server creates a random secret in a `session-secret` file next to the active config, so cookies remain valid across restarts for their configured lifetime. Keep this file with the config data. The config directory must be writable when the file is first created.
+
+For Docker Swarm or any multi-replica deployment, set `OIDC_MOCK_SESSION_SECRET` to the same strong value for every replica:
 
 ```bash
 OIDC_MOCK_SESSION_SECRET='change-this-long-random-session-secret'
 ```
 
-If the variable is omitted, the mock generates a random per-process secret. That is fine for one local process, but browser SSO cookies stop working after restart and may fail between replicas.
+When `OIDC_MOCK_SESSION_SECRET` is set, it takes precedence over the local secret file. A per-process secret is still used by applications that embed `createApp()` directly without passing a secret.
 
 For Docker Swarm or other deployments where the config directory is mounted into the service, set an admin token:
 

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import { isAuthLevel } from "./auth-level.js";
 import { resolveEffectiveUser } from "./users.js";
 /**
@@ -42,6 +43,38 @@ export function clearSessionUser(req, res, config, tenantId) {
  */
 export function createDefaultSessionSecret() {
     return crypto.randomBytes(32).toString("base64url");
+}
+/**
+ * Loads the session signing secret from disk, creating it once for this config directory.
+ */
+export function loadOrCreateSessionSecret(secretPath) {
+    try {
+        return readPersistedSessionSecret(secretPath);
+    }
+    catch (error) {
+        if (!isMissingFile(error)) {
+            throw error;
+        }
+    }
+    const secret = createDefaultSessionSecret();
+    const temporaryPath = `${secretPath}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`;
+    try {
+        // Link a fully written temporary file so concurrent processes never read a partial secret.
+        fs.writeFileSync(temporaryPath, `${secret}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+        try {
+            fs.linkSync(temporaryPath, secretPath);
+            return secret;
+        }
+        catch (error) {
+            if (!isAlreadyExists(error)) {
+                throw error;
+            }
+            return readPersistedSessionSecret(secretPath);
+        }
+    }
+    finally {
+        fs.rmSync(temporaryPath, { force: true });
+    }
 }
 /**
  * Compares two strings without leaking timing differences for equal-length values.
@@ -128,4 +161,32 @@ function parseBase64UrlJson(value) {
     catch {
         return undefined;
     }
+}
+/**
+ * Reads a persisted secret and rejects empty or truncated files instead of invalidating sessions silently.
+ */
+function readPersistedSessionSecret(secretPath) {
+    const secret = fs.readFileSync(secretPath, "utf8").trim();
+    if (secret.length < 32) {
+        throw new Error(`Persisted session secret must contain at least 32 characters: ${secretPath}`);
+    }
+    return secret;
+}
+/**
+ * Checks whether a filesystem operation failed because the secret file is not present yet.
+ */
+function isMissingFile(error) {
+    return isNodeError(error) && error.code === "ENOENT";
+}
+/**
+ * Checks whether another process created the secret first.
+ */
+function isAlreadyExists(error) {
+    return isNodeError(error) && error.code === "EEXIST";
+}
+/**
+ * Narrows filesystem errors to Node errors with a code field.
+ */
+function isNodeError(error) {
+    return error instanceof Error && "code" in error;
 }
