@@ -331,10 +331,12 @@ export function renderAdminPage(user: MockUser): string {
               <div class="grid">
                 <label>Client ID <input v-model.trim="selectedClient.clientId"></label>
                 <div class="secret-row">
-                  <label>Client Secret <input v-model="selectedClient.clientSecret" autocomplete="new-password"></label>
+                  <label>Legacy Client Secret <input v-model="selectedClient.clientSecret" autocomplete="new-password"></label>
                   <button type="button" @click="generateClientSecret">Generate</button>
                 </div>
               </div>
+              <label>Named Client Secrets JSON <textarea v-model="selectedClient.clientSecretsText" spellcheck="false" placeholder='[{"name":"test","secret":"..."},{"name":"prod","secret":"..."}]'></textarea></label>
+              <p class="meta">Each name is a separate accepted credential. Saved values are hidden; replace a masked value to change it.</p>
               <div class="checks">
                 <label class="check"><input v-model="selectedClient.enabled" type="checkbox"> Enabled</label>
               </div>
@@ -441,6 +443,7 @@ export function renderAdminPage(user: MockUser): string {
         for (const client of tenant.clients) {
           client.redirectUrisText = (client.redirectUris || []).join('\\n');
           client.allowedScopesText = (client.allowedScopes || []).join(' ');
+          client.clientSecretsText = JSON.stringify(client.clientSecrets || [], null, 2);
         }
         for (const user of tenant.users) {
           user.rolesText = (user.roles || []).join('\\n');
@@ -464,9 +467,11 @@ export function renderAdminPage(user: MockUser): string {
         for (const client of tenant.clients) {
           client.redirectUris = splitLines(client.redirectUrisText);
           client.allowedScopes = splitTokens(client.allowedScopesText);
+          client.clientSecrets = JSON.parse(client.clientSecretsText || '[]');
           if (!client.clientSecret) delete client.clientSecret;
           delete client.redirectUrisText;
           delete client.allowedScopesText;
+          delete client.clientSecretsText;
         }
         for (const user of tenant.users) {
           user.roles = splitLines(user.rolesText);
@@ -599,7 +604,9 @@ export function renderAdminPage(user: MockUser): string {
     };
     // Renders the selected client's editable fields.
     const renderClient = (client) => \`<div class="panel-body">
-      <div class="grid"><label>Client ID <input data-field="client.clientId" value="\${escapeText(client.clientId)}"></label><div class="secret-row"><label>Client Secret <input data-field="client.clientSecret" autocomplete="new-password" value="\${escapeText(client.clientSecret || '')}"></label><button type="button" data-action="generate-client-secret">Generate</button></div></div>
+      <div class="grid"><label>Client ID <input data-field="client.clientId" value="\${escapeText(client.clientId)}"></label><div class="secret-row"><label>Legacy Client Secret <input data-field="client.clientSecret" autocomplete="new-password" value="\${escapeText(client.clientSecret || '')}"></label><button type="button" data-action="generate-client-secret">Generate</button></div></div>
+      <label>Named Client Secrets JSON <textarea data-field="client.clientSecretsText" spellcheck="false" placeholder='[{"name":"test","secret":"..."},{"name":"prod","secret":"..."}]'>\${escapeText(client.clientSecretsText || '[]')}</textarea></label>
+      <p class="meta">Each name is a separate accepted credential. Saved values are hidden; replace a masked value to change it.</p>
       <div class="checks"><label class="check"><input data-field="client.enabled" type="checkbox" \${client.enabled ? 'checked' : ''}> Enabled</label></div>
       <label>Redirect URIs <textarea data-field="client.redirectUrisText" spellcheck="false">\${escapeText(client.redirectUrisText || '')}</textarea></label>
       <label>Allowed Scopes <textarea data-field="client.allowedScopesText" spellcheck="false">\${escapeText(client.allowedScopesText || '')}</textarea></label>
@@ -649,6 +656,7 @@ export function renderAdminPage(user: MockUser): string {
       if (field === 'tenant.passkeysMandatory') { tenant.passkeysMandatory = value; tenant.passkeysEnabled = tenant.passkeysEnabled || value; }
       if (field === 'client.clientId') client.clientId = value.trim();
       if (field === 'client.clientSecret') client.clientSecret = value;
+      if (field === 'client.clientSecretsText') client.clientSecretsText = value;
       if (field === 'client.enabled') client.enabled = value;
       if (field === 'client.redirectUrisText') client.redirectUrisText = value;
       if (field === 'client.allowedScopesText') client.allowedScopesText = value;
@@ -757,7 +765,7 @@ export function renderAdminPage(user: MockUser): string {
     };
     // Adds a client to the selected tenant.
     const addClient = () => {
-      selectedTenant().clients.push({ clientId: 'new-client', clientSecret: '', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
+      selectedTenant().clients.push({ clientId: 'new-client', clientSecret: '', clientSecrets: [], clientSecretsText: '[]', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
       state.selectedClientIndex = selectedTenant().clients.length - 1; render();
     };
     // Removes the selected client after confirmation.

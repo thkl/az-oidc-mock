@@ -3,3 +3,4 @@ config.json
 .impeccable
 .DS_Store
 .agents
+graphify-out/

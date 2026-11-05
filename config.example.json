@@ -20,7 +20,10 @@
       "clients": [
         {
           "clientId": "local-app",
-          "clientSecret": "local-secret",
+          "clientSecrets": [
+            { "name": "test", "secret": "local-test-secret" },
+            { "name": "prod", "secret": "local-prod-secret" }
+          ],
           "redirectUris": ["http://localhost:5173/auth/callback"],
           "allowedScopes": ["openid", "profile", "email", "offline_access"],
           "enabled": true

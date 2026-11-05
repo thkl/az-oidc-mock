@@ -22,12 +22,42 @@ const deviceSchema = z.object({
   enabled: z.boolean().default(true)
 });
 
+const namedClientSecretSchema = z.object({
+  name: z.string().trim().min(1).max(32).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/).transform((name) => name.toLowerCase()),
+  secret: z.string().min(1)
+});
+
 const clientSchema = z.object({
   clientId: z.string().min(1),
   clientSecret: z.string().optional(),
+  clientSecrets: z.array(namedClientSecretSchema).max(20).optional(),
   redirectUris: z.array(z.string().url()).min(1),
   allowedScopes: z.array(z.string()).default(["openid", "profile", "email"]),
   enabled: z.boolean().default(true)
+}).superRefine((client, ctx) => {
+  const names = new Set<string>();
+  const values = new Set<string>();
+  if (client.clientSecret) {
+    values.add(client.clientSecret);
+  }
+  for (const [index, credential] of (client.clientSecrets ?? []).entries()) {
+    if (names.has(credential.name)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["clientSecrets", index, "name"],
+        message: `Duplicate client secret name: ${credential.name}`
+      });
+    }
+    names.add(credential.name);
+    if (values.has(credential.secret)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["clientSecrets", index, "secret"],
+        message: "Client secret values must be unique within a client"
+      });
+    }
+    values.add(credential.secret);
+  }
 });
 
 const tenantSchema = z.object({

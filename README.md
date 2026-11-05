@@ -88,6 +88,8 @@ Secure tenant passwords are read from a `passwd` file next to the active config 
 
 Set `OIDC_MOCK_ADMIN_TOKEN` to enable internal password-management endpoints for containerized deployments where editing `passwd` directly is inconvenient.
 
+Clients can use a legacy single `clientSecret` or multiple named entries under `clientSecrets`. For example, a client can have separate `test` and `prod` values; the OAuth token request still sends only `client_id` and `client_secret`. Named values are supported by configuration and token authentication. The manager rotation API remains proposed.
+
 Verbose logging can be enabled in `config.json`:
 
 ```json
@@ -208,7 +210,7 @@ curl -sS -X POST http://localhost:3000/common/oauth2/v2.0/token \
   -H 'content-type: application/x-www-form-urlencoded' \
   -d 'grant_type=authorization_code' \
   -d 'client_id=local-app' \
-  -d 'client_secret=local-secret' \
+  -d 'client_secret=local-prod-secret' \
   -d 'code=PASTE_CODE_HERE' \
   -d 'redirect_uri=http://localhost:5173/auth/callback'
 ```
@@ -232,7 +234,7 @@ curl -sS -X POST http://localhost:3000/common/oauth2/v2.0/token \
   -H 'content-type: application/x-www-form-urlencoded' \
   -d 'grant_type=refresh_token' \
   -d 'client_id=local-app' \
-  -d 'client_secret=local-secret' \
+  -d 'client_secret=local-prod-secret' \
   -d 'refresh_token=PASTE_REFRESH_TOKEN_HERE'
 ```
 
@@ -401,6 +403,8 @@ curl -sS -X DELETE http://localhost:3000/common/internal/passwords \
 ```
 
 The password-management endpoints return `401` unless `OIDC_MOCK_ADMIN_TOKEN` is configured and the request passes the matching bearer token or `x-admin-token` header.
+
+For named client-secret configuration and the proposed external rotation API, see [Client Secret Rotation API — Manager Handoff](docs/client-secret-rotation.md). The rotation API is not implemented yet.
 
 ## Device-Bound Sessions
 

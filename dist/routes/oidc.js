@@ -1204,7 +1204,17 @@ function authenticateClient(tenant, req) {
     if (!client || !client.enabled) {
         return undefined;
     }
-    if (client.clientSecret && client.clientSecret !== clientSecret) {
+    const configuredSecrets = [
+        ...(client.clientSecret ? [client.clientSecret] : []),
+        ...(client.clientSecrets ?? []).map((credential) => credential.secret)
+    ];
+    let matchesConfiguredSecret = false;
+    for (const configuredSecret of configuredSecrets) {
+        // Check every configured value so a match's position does not reveal the named slot.
+        const matches = constantTimeEqual(clientSecret ?? "", configuredSecret);
+        matchesConfiguredSecret = matches || matchesConfiguredSecret;
+    }
+    if (configuredSecrets.length > 0 && !matchesConfiguredSecret) {
         return undefined;
     }
     return client;

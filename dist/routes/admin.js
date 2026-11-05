@@ -254,7 +254,10 @@ function redactConfigSecrets(config) {
             ...tenant,
             clients: tenant.clients.map((client) => ({
                 ...client,
-                ...(client.clientSecret ? { clientSecret: SECRET_MASK } : {})
+                ...(client.clientSecret ? { clientSecret: SECRET_MASK } : {}),
+                ...(client.clientSecrets ? {
+                    clientSecrets: client.clientSecrets.map((credential) => ({ ...credential, secret: SECRET_MASK }))
+                } : {})
             }))
         }))
     };
@@ -273,9 +276,18 @@ function mergeMaskedClientSecrets(currentConfig, nextConfig) {
                     const currentClient = currentTenant ? findClient(currentTenant, client.clientId) : undefined;
                     // A missing or masked secret means "keep the existing secret" when one exists.
                     if ((client.clientSecret === undefined || client.clientSecret === SECRET_MASK) && currentClient?.clientSecret) {
-                        return { ...client, clientSecret: currentClient.clientSecret };
+                        client.clientSecret = currentClient.clientSecret;
                     }
-                    return client.clientSecret === SECRET_MASK ? { ...client, clientSecret: undefined } : client;
+                    else if (client.clientSecret === SECRET_MASK) {
+                        client.clientSecret = undefined;
+                    }
+                    const currentSecrets = currentClient?.clientSecrets ?? [];
+                    const clientSecrets = (client.clientSecrets ?? []).flatMap((credential) => {
+                        const current = currentSecrets.find((entry) => entry.name.toLowerCase() === credential.name.toLowerCase());
+                        const secret = credential.secret === SECRET_MASK ? current?.secret : credential.secret;
+                        return secret ? [{ ...credential, secret }] : [];
+                    });
+                    return { ...client, ...(clientSecrets.length > 0 ? { clientSecrets } : { clientSecrets: undefined }) };
                 })
             };
         })
