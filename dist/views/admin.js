@@ -222,6 +222,19 @@ export function renderAdminPage(user) {
     .check input { width: 16px; min-height: 16px; }
     .share-box { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); padding: 9px; }
     .share-box strong { font-size: 12px; font-weight: 480; }
+    .named-secrets { display: grid; gap: 7px; }
+    .secret-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); padding: 7px 8px; }
+    .secret-item > div { display: grid; gap: 2px; min-width: 0; }
+    .secret-item strong { font-size: 12px; font-weight: 460; overflow-wrap: anywhere; }
+    .secret-item small { color: var(--muted); font-size: 10px; }
+    dialog { width: min(460px, calc(100vw - 32px)); max-width: none; padding: 0; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--text); background: var(--surface-2); box-shadow: 0 24px 80px rgba(2, 10, 24, .38); }
+    dialog::backdrop { background: rgba(5, 17, 35, .58); backdrop-filter: blur(3px); }
+    .secret-dialog-content { display: grid; gap: 14px; padding: 20px; }
+    .secret-dialog-content h2 { margin: 0; font-size: 17px; font-weight: 500; }
+    .secret-dialog-content p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .secret-dialog-content .actions { justify-content: flex-end; }
+    .secret-dialog-content .secret-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .secret-value { font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .status { border-radius: 5px; padding: 7px 8px; font-size: 11px; border: 1px solid var(--line); color: var(--muted); background: var(--surface-2); }
     .status.ok { border-color: rgba(22, 101, 52, .26); color: #166534; background: rgba(220, 252, 231, .68); }
     :root[data-theme="dark"] .status.ok { color: #bbf7d0; background: rgba(20, 83, 45, .42); }
@@ -333,8 +346,17 @@ export function renderAdminPage(user) {
                   <button type="button" @click="generateClientSecret">Generate</button>
                 </div>
               </div>
-              <label>Named Client Secrets JSON <textarea v-model="selectedClient.clientSecretsText" spellcheck="false" placeholder='[{"name":"test","secret":"..."},{"name":"prod","secret":"..."}]'></textarea></label>
-              <p class="meta">Each name is a separate accepted credential. Saved values are hidden; replace a masked value to change it.</p>
+              <div class="named-secrets">
+                <div class="actions"><strong>Named Client Secrets</strong><button type="button" @click="openNamedSecretDialog">Add Secret</button></div>
+                <p class="meta">Secret values are shown once when created. Save configuration to apply changes.</p>
+                <div v-if="selectedClient.clientSecrets.length" class="named-secrets">
+                  <div v-for="(credential, index) in selectedClient.clientSecrets" :key="credential.name" class="secret-item">
+                    <div><strong>{{ credential.name }}</strong><small>Value hidden</small></div>
+                    <button class="danger" type="button" @click="deleteNamedSecret(index)">Delete</button>
+                  </div>
+                </div>
+                <p v-else class="meta">No named secrets configured.</p>
+              </div>
               <div class="checks">
                 <label class="check"><input v-model="selectedClient.enabled" type="checkbox"> Enabled</label>
               </div>
@@ -441,7 +463,6 @@ export function renderAdminPage(user) {
         for (const client of tenant.clients) {
           client.redirectUrisText = (client.redirectUris || []).join('\\n');
           client.allowedScopesText = (client.allowedScopes || []).join(' ');
-          client.clientSecretsText = JSON.stringify(client.clientSecrets || [], null, 2);
         }
         for (const user of tenant.users) {
           user.rolesText = (user.roles || []).join('\\n');
@@ -465,7 +486,7 @@ export function renderAdminPage(user) {
         for (const client of tenant.clients) {
           client.redirectUris = splitLines(client.redirectUrisText);
           client.allowedScopes = splitTokens(client.allowedScopesText);
-          client.clientSecrets = JSON.parse(client.clientSecretsText || '[]');
+          client.clientSecrets = client.clientSecrets || [];
           if (!client.clientSecret) delete client.clientSecret;
           delete client.redirectUrisText;
           delete client.allowedScopesText;
@@ -491,6 +512,7 @@ export function renderAdminPage(user) {
       selectedClientIndex: 0,
       selectedUserIndex: 0,
       selectedShareUserKey: '',
+      namedSecretDialog: null,
       csrfToken: '',
       authStatus: {},
       themeMode: localStorage.getItem('az_oidc_admin_theme') || 'system',
@@ -523,7 +545,9 @@ export function renderAdminPage(user) {
       const user = selectedUser();
       const totalClients = state.editable.tenants.reduce((sum, item) => sum + item.clients.length, 0);
       const totalUsers = state.editable.tenants.reduce((sum, item) => sum + item.users.length, 0);
-      document.getElementById('app').innerHTML = \`
+      const appRoot = document.getElementById('app');
+      appRoot.removeAttribute('v-cloak');
+      appRoot.innerHTML = \`
         <aside>
           <div class="brand"><h1>OIDC Admin</h1><p>Signed in as ${escapeHtml(user.preferred_username)}</p></div>
           <div class="theme-control" aria-label="Theme">
@@ -553,8 +577,25 @@ export function renderAdminPage(user) {
             \${tenant ? '<div class="actions"><button type="button" data-action="duplicate-tenant">Duplicate</button><button class="danger" type="button" data-action="remove-tenant">Delete Tenant</button></div>' : ''}
           </div>
           \${state.loading ? '<div class="empty">Loading configuration...</div>' : (!tenant ? '<div class="empty">Create a tenant to begin.</div>' : renderTenant(tenant, client, user))}
-        </main>\`;
+        </main>
+        \${renderNamedSecretDialog()}\`;
       bind();
+      const dialog = document.getElementById('named-secret-dialog');
+      if (dialog) {
+        dialog.addEventListener('cancel', (event) => {
+          event.preventDefault();
+          if (state.namedSecretDialog?.stage === 'create') {
+            state.namedSecretDialog = null;
+            render();
+          }
+        });
+        dialog.showModal();
+        requestAnimationFrame(() => {
+          const target = dialog.querySelector(state.namedSecretDialog?.stage === 'reveal' ? '#named-secret-value' : '#named-secret-name');
+          target?.focus();
+          if (state.namedSecretDialog?.stage === 'reveal') target?.select();
+        });
+      }
     };
     // Renders tenant settings plus the client and user editor panels.
     const renderTenant = (tenant, client, user) => \`
@@ -603,13 +644,44 @@ export function renderAdminPage(user) {
     // Renders the selected client's editable fields.
     const renderClient = (client) => \`<div class="panel-body">
       <div class="grid"><label>Client ID <input data-field="client.clientId" value="\${escapeText(client.clientId)}"></label><div class="secret-row"><label>Legacy Client Secret <input data-field="client.clientSecret" autocomplete="new-password" value="\${escapeText(client.clientSecret || '')}"></label><button type="button" data-action="generate-client-secret">Generate</button></div></div>
-      <label>Named Client Secrets JSON <textarea data-field="client.clientSecretsText" spellcheck="false" placeholder='[{"name":"test","secret":"..."},{"name":"prod","secret":"..."}]'>\${escapeText(client.clientSecretsText || '[]')}</textarea></label>
-      <p class="meta">Each name is a separate accepted credential. Saved values are hidden; replace a masked value to change it.</p>
+      <div class="named-secrets">
+        <div class="actions"><strong>Named Client Secrets</strong><button type="button" data-action="add-named-secret">Add Secret</button></div>
+        <p class="meta">Secret values are shown once when created. Save configuration to apply changes.</p>
+        \${client.clientSecrets?.length ? \`<div class="named-secrets">\${client.clientSecrets.map((credential, index) => \`
+          <div class="secret-item"><div><strong>\${escapeText(credential.name)}</strong><small>Value hidden</small></div><button class="danger" type="button" data-action="delete-named-secret" data-index="\${index}" aria-label="Delete secret \${escapeText(credential.name)}">Delete</button></div>
+        \`).join('')}</div>\` : '<p class="meta">No named secrets configured.</p>'}
+      </div>
       <div class="checks"><label class="check"><input data-field="client.enabled" type="checkbox" \${client.enabled ? 'checked' : ''}> Enabled</label></div>
       <label>Redirect URIs <textarea data-field="client.redirectUrisText" spellcheck="false">\${escapeText(client.redirectUrisText || '')}</textarea></label>
       <label>Allowed Scopes <textarea data-field="client.allowedScopesText" spellcheck="false">\${escapeText(client.allowedScopesText || '')}</textarea></label>
       <div class="actions"><button class="danger" type="button" data-action="remove-client">Delete Client</button></div>
     </div>\`;
+    // Renders the create and one-time reveal stages for a named client secret.
+    const renderNamedSecretDialog = () => {
+      const secretDialog = state.namedSecretDialog;
+      if (!secretDialog) return '';
+      if (secretDialog.stage === 'reveal') {
+        return \`<dialog id="named-secret-dialog" aria-labelledby="named-secret-title" aria-describedby="named-secret-description">
+          <div class="secret-dialog-content">
+            <h2 id="named-secret-title">Your new secret</h2>
+            <p id="named-secret-description">Copy this value now. It will be hidden when you close this window.</p>
+            <label><span>Secret for \${escapeText(secretDialog.name)}</span><div class="secret-row"><input id="named-secret-value" class="secret-value" readonly value="\${escapeText(secretDialog.secret)}"><button type="button" data-action="copy-named-secret">Copy</button></div></label>
+            <p role="status">\${escapeText(secretDialog.copyMessage || 'Store this value in a password manager or vault.')}</p>
+            <div class="actions"><button class="primary" type="button" data-action="confirm-copied">I’ve copied it</button></div>
+          </div>
+        </dialog>\`;
+      }
+      return \`<dialog id="named-secret-dialog" aria-labelledby="named-secret-title" aria-describedby="named-secret-description">
+        <div class="secret-dialog-content">
+          <h2 id="named-secret-title">Create named secret</h2>
+          <p id="named-secret-description">Choose a short name for this credential. A secure value will be generated for you.</p>
+          <label for="named-secret-name">Secret name<input id="named-secret-name" data-field="named-secret-name" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" autocomplete="off" spellcheck="false" value="\${escapeText(secretDialog.name)}" aria-describedby="named-secret-name-help"></label>
+          <p id="named-secret-name-help">Use up to 32 letters, numbers, hyphens, or underscores. Names are case-insensitive.</p>
+          \${secretDialog.error ? \`<div class="status error" role="alert">\${escapeText(secretDialog.error)}</div>\` : ''}
+          <div class="actions"><button type="button" data-action="cancel-named-secret">Cancel</button><button class="primary" type="button" data-action="create-named-secret">Generate Secret</button></div>
+        </div>
+      </dialog>\`;
+    };
     // Renders the selected user's editable fields and security actions.
     const renderUser = (tenant, user) => \`<div class="panel-body">
       <div class="share-box"><strong>Security Enrollment</strong>\${renderAuthBadges(tenant, user)}</div>
@@ -632,7 +704,10 @@ export function renderAdminPage(user) {
     };
     // Re-attaches listeners after every render.
     const bind = () => {
-      document.querySelectorAll('[data-field]').forEach((element) => element.addEventListener('change', updateField));
+      document.querySelectorAll('[data-field]').forEach((element) => {
+        element.addEventListener('change', updateField);
+        if (element.dataset.field === 'named-secret-name') element.addEventListener('input', updateField);
+      });
       document.querySelectorAll('[data-action]').forEach((element) => element.addEventListener('click', handleAction));
     };
     // Applies a changed form field to the editable state object.
@@ -642,6 +717,13 @@ export function renderAdminPage(user) {
       const client = selectedClient();
       const user = selectedUser();
       const value = event.currentTarget.type === 'checkbox' ? event.currentTarget.checked : event.currentTarget.value;
+      if (field === 'named-secret-name') {
+        if (state.namedSecretDialog) {
+          state.namedSecretDialog.name = value;
+          state.namedSecretDialog.error = '';
+        }
+        return;
+      }
       if (field === 'tenant.tenantId') { tenant.tenantId = value.trim(); state.selectedTenantId = tenant.tenantId; }
       if (field === 'tenant.displayName') tenant.displayName = value.trim();
       if (field === 'tenant.sessionLifetimeSeconds') tenant.sessionLifetimeSeconds = Number(value);
@@ -654,7 +736,6 @@ export function renderAdminPage(user) {
       if (field === 'tenant.passkeysMandatory') { tenant.passkeysMandatory = value; tenant.passkeysEnabled = tenant.passkeysEnabled || value; }
       if (field === 'client.clientId') client.clientId = value.trim();
       if (field === 'client.clientSecret') client.clientSecret = value;
-      if (field === 'client.clientSecretsText') client.clientSecretsText = value;
       if (field === 'client.enabled') client.enabled = value;
       if (field === 'client.redirectUrisText') client.redirectUrisText = value;
       if (field === 'client.allowedScopesText') client.allowedScopesText = value;
@@ -681,6 +762,12 @@ export function renderAdminPage(user) {
       if (action === 'remove-tenant') return removeTenant();
       if (action === 'select-client') { state.selectedClientIndex = Number(event.currentTarget.dataset.index); return render(); }
       if (action === 'add-client') return addClient();
+      if (action === 'add-named-secret') return openNamedSecretDialog();
+      if (action === 'cancel-named-secret') { state.namedSecretDialog = null; return render(); }
+      if (action === 'create-named-secret') return createNamedSecret();
+      if (action === 'copy-named-secret') return copyNamedSecret();
+      if (action === 'confirm-copied') return confirmNamedSecretCopied();
+      if (action === 'delete-named-secret') return deleteNamedSecret(Number(event.currentTarget.dataset.index));
       if (action === 'generate-client-secret') { selectedClient().clientSecret = 'az_mock-sk_' + randomBase64Url(24); return render(); }
       if (action === 'remove-client') return removeClient();
       if (action === 'select-user') { state.selectedUserIndex = Number(event.currentTarget.dataset.index); return render(); }
@@ -763,8 +850,78 @@ export function renderAdminPage(user) {
     };
     // Adds a client to the selected tenant.
     const addClient = () => {
-      selectedTenant().clients.push({ clientId: 'new-client', clientSecret: '', clientSecrets: [], clientSecretsText: '[]', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
+      selectedTenant().clients.push({ clientId: 'new-client', clientSecret: '', clientSecrets: [], redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
       state.selectedClientIndex = selectedTenant().clients.length - 1; render();
+    };
+    // Opens the named-secret creation dialog for the selected client.
+    const openNamedSecretDialog = () => {
+      const client = selectedClient();
+      if (!client) return;
+      client.clientSecrets = client.clientSecrets || [];
+      if (client.clientSecrets.length >= 20) {
+        state.status = { type: 'error', message: 'A client can have at most 20 named secrets.' };
+        return render();
+      }
+      state.namedSecretDialog = { stage: 'create', name: '', secret: '', error: '', copyMessage: '' };
+      render();
+    };
+    // Validates a new name, generates its value, and moves to the one-time reveal.
+    const createNamedSecret = () => {
+      const client = selectedClient();
+      const secretDialog = state.namedSecretDialog;
+      if (!client || !secretDialog || secretDialog.stage !== 'create') return;
+      const name = secretDialog.name.trim().toLowerCase();
+      client.clientSecrets = client.clientSecrets || [];
+      if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) {
+        secretDialog.error = 'Enter a name of 1–32 letters, numbers, hyphens, or underscores. Start with a letter or number.';
+        return render();
+      }
+      if (client.clientSecrets.some((credential) => credential.name.toLowerCase() === name)) {
+        secretDialog.error = 'A secret with this name already exists for the client.';
+        return render();
+      }
+      if (client.clientSecrets.length >= 20) {
+        secretDialog.error = 'A client can have at most 20 named secrets.';
+        return render();
+      }
+      secretDialog.name = name;
+      secretDialog.secret = 'az_mock-sk_' + randomBase64Url(32);
+      secretDialog.stage = 'reveal';
+      secretDialog.error = '';
+      render();
+    };
+    // Copies the one-time value when clipboard access is available.
+    const copyNamedSecret = async () => {
+      const secretDialog = state.namedSecretDialog;
+      if (!secretDialog || secretDialog.stage !== 'reveal') return;
+      try {
+        await navigator.clipboard.writeText(secretDialog.secret);
+        secretDialog.copyMessage = 'Copied to clipboard. Store it in a password manager or vault.';
+      } catch {
+        secretDialog.copyMessage = 'Clipboard access is unavailable. Select and copy the value above.';
+      }
+      render();
+    };
+    // Adds the generated credential to the pending config after the user confirms copying it.
+    const confirmNamedSecretCopied = () => {
+      const client = selectedClient();
+      const secretDialog = state.namedSecretDialog;
+      if (!client || !secretDialog || secretDialog.stage !== 'reveal') return;
+      client.clientSecrets = client.clientSecrets || [];
+      client.clientSecrets.push({ name: secretDialog.name, secret: secretDialog.secret });
+      state.namedSecretDialog = null;
+      state.status = { type: 'ok', message: 'Named secret "' + secretDialog.name + '" added. Save configuration to apply it.' };
+      render();
+    };
+    // Deletes a named credential from the pending client config.
+    const deleteNamedSecret = (index) => {
+      const client = selectedClient();
+      const credential = client?.clientSecrets?.[index];
+      if (!client || !credential) return;
+      if (!confirm('Delete named secret "' + credential.name + '"? Client requests using it will no longer authenticate after you save.')) return;
+      client.clientSecrets.splice(index, 1);
+      state.status = { type: 'ok', message: 'Named secret "' + credential.name + '" removed. Save configuration to apply it.' };
+      render();
     };
     // Removes the selected client after confirmation.
     const removeClient = () => {
