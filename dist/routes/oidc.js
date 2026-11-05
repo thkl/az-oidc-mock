@@ -315,6 +315,10 @@ export function registerOidcRoutes(app, context) {
             res.status(400).json({ error: "invalid_request", error_description: "Passkey client is no longer available" });
             return;
         }
+        // Completing passkey enrollment is also a successful login, so establish the reusable tenant session.
+        if (tenant.enableSessions) {
+            setSessionUser(req, res, config, tenant, user.user.sub, token.auth.originalLevel, context.sessionSecret);
+        }
         const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub, token.auth);
         res.json({ redirect });
     });
@@ -393,6 +397,10 @@ export function registerOidcRoutes(app, context) {
         if (!client) {
             res.status(400).json({ error: "invalid_request", error_description: "Passkey client is no longer available" });
             return;
+        }
+        // Successful passkey assertions must create the same reusable session as password logins.
+        if (tenant.enableSessions) {
+            setSessionUser(req, res, config, tenant, user.user.sub, token.auth.originalLevel, context.sessionSecret);
         }
         const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub, authContext("passkey"));
         res.json({ redirect });
