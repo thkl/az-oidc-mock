@@ -6,12 +6,13 @@ import { PasswordStore } from "./oidc/passwords.js";
 import { createDefaultSessionSecret } from "./oidc/session.js";
 import { OidcState } from "./oidc/state.js";
 import { registerAdminRoutes } from "./routes/admin.js";
+import { registerClientSecretRotationRoutes } from "./routes/client-secret-rotation.js";
 import { registerInternalRoutes } from "./routes/internal.js";
 import { registerOidcRoutes } from "./routes/oidc.js";
 /**
  * Creates the Express application and wires all tenant-aware OIDC routes.
  */
-export function createApp({ config, keys, logger = createLogger(), state = new OidcState(), passwordStore = new PasswordStore(), passkeyStore = new PasskeyStore(), mfaStore = new MfaStore(), adminToken, sessionSecret = createDefaultSessionSecret(), configPath, onConfigSaved }) {
+export function createApp({ config, keys, logger = createLogger(), state = new OidcState(), passwordStore = new PasswordStore(), passkeyStore = new PasskeyStore(), mfaStore = new MfaStore(), adminToken, rotationManagerId, rotationApiAllowlist, clientSecretRotationStore, sessionSecret = createDefaultSessionSecret(), configPath, onConfigSaved }) {
     const app = express();
     const getConfig = typeof config === "function" ? config : () => config;
     // Route context keeps request handlers independent from process-level startup.
@@ -24,6 +25,9 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
         passkeyStore,
         mfaStore,
         adminToken,
+        rotationManagerId,
+        rotationApiAllowlist,
+        clientSecretRotationStore,
         sessionSecret,
         configPath,
         onConfigSaved
@@ -52,6 +56,7 @@ export function createApp({ config, keys, logger = createLogger(), state = new O
         res.json({ status: "ok" });
     });
     registerAdminRoutes(app, routeContext);
+    registerClientSecretRotationRoutes(app, routeContext);
     registerOidcRoutes(app, routeContext);
     registerInternalRoutes(app, routeContext);
     return app;

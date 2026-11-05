@@ -88,7 +88,7 @@ Secure tenant passwords are read from a `passwd` file next to the active config 
 
 Set `OIDC_MOCK_ADMIN_TOKEN` to enable internal password-management endpoints for containerized deployments where editing `passwd` directly is inconvenient.
 
-Clients can use a legacy single `clientSecret` or multiple named entries under `clientSecrets`. For example, a client can have separate `test` and `prod` values; the OAuth token request still sends only `client_id` and `client_secret`. Named values are supported by configuration and token authentication. The manager rotation API remains proposed.
+Clients can use a legacy single `clientSecret` or multiple named entries under `clientSecrets`. For example, a client can have separate `test` and `prod` values; the OAuth token request still sends only `client_id` and `client_secret`. Named values are supported by configuration and token authentication. A manager authenticates with the target client's current credential, exchanges it for a short-lived capability scoped to one named create or rotation, and uses that capability to start and activate the operation. See [client-secret-rotation.md](docs/client-secret-rotation.md) for setup and endpoints.
 
 Verbose logging can be enabled in `config.json`:
 
@@ -404,7 +404,7 @@ curl -sS -X DELETE http://localhost:3000/common/internal/passwords \
 
 The password-management endpoints return `401` unless `OIDC_MOCK_ADMIN_TOKEN` is configured and the request passes the matching bearer token or `x-admin-token` header.
 
-For named client-secret configuration and the proposed external rotation API, see [Client Secret Rotation API — Manager Handoff](docs/client-secret-rotation.md). The rotation API is not implemented yet.
+For rotation API authentication, allowlist setup, endpoint examples, and storage details, see [Client Secret Rotation API — Manager Handoff](docs/client-secret-rotation.md).
 
 ## Device-Bound Sessions
 

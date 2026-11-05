@@ -7,6 +7,7 @@ import type { AuthContext } from "../oidc/auth-level.js";
 import { authContext, isAuthLevel } from "../oidc/auth-level.js";
 import type { SigningKeys } from "../oidc/keys.js";
 import { createTotpSecret, createTotpUri, verifyTotpSecret } from "../oidc/mfa.js";
+import type { ClientSecretRotationStore } from "../oidc/client-secret-rotation.js";
 import { createPasskeyChallenge, verifyPasskeyRegistration } from "../oidc/passkeys.js";
 import type { PasswordStore } from "../oidc/passwords.js";
 import { clearSessionUser, getSessionUser, setSessionUser } from "../oidc/session.js";
@@ -508,7 +509,18 @@ export function registerOidcRoutes(app: Express, context: RouteContext): void {
       clientId: req.body.client_id
     });
 
-    const client = authenticateClient(tenant, req);
+    let client: MockClient | undefined;
+    try {
+      context.clientSecretRotationStore?.synchronizeConfig(config);
+      client = authenticateClient(tenant, req, context.clientSecretRotationStore);
+    } catch (error) {
+      context.logger.error("client secret verification storage failed", {
+        tenantId: tenant.tenantId,
+        error: error instanceof Error ? error.message : "unknown error"
+      });
+      sendTokenError(res, "temporarily_unavailable", "Client authentication is temporarily unavailable", 503);
+      return;
+    }
     if (!client) {
       context.logger.warn("token request rejected due to client authentication failure", {
         tenantId: tenant.tenantId,
@@ -1445,7 +1457,11 @@ async function sendTokenSet(
 /**
  * Authenticates a token endpoint client through Basic auth or form fields.
  */
-function authenticateClient(tenant: MockTenant, req: Request): MockClient | undefined {
+function authenticateClient(
+  tenant: MockTenant,
+  req: Request,
+  rotationStore?: ClientSecretRotationStore
+): MockClient | undefined {
   const basic = parseBasicAuth(req);
   const clientId = basic?.clientId ?? readString(req.body.client_id);
   const clientSecret = basic?.clientSecret ?? readString(req.body.client_secret);
@@ -1460,15 +1476,20 @@ function authenticateClient(tenant: MockTenant, req: Request): MockClient | unde
 
   const configuredSecrets = [
     ...(client.clientSecret ? [client.clientSecret] : []),
-    ...(client.clientSecrets ?? []).map((credential) => credential.secret)
+    ...(!rotationStore ? (client.clientSecrets ?? []).map((credential) => credential.secret) : [])
   ];
-  let matchesConfiguredSecret = false;
+  let matchesConfiguredSecret = rotationStore
+    ? rotationStore.verifyNamedSecret(tenant.tenantId, client, clientSecret ?? "")
+    : false;
   for (const configuredSecret of configuredSecrets) {
     // Check every configured value so a match's position does not reveal the named slot.
     const matches = constantTimeEqual(clientSecret ?? "", configuredSecret);
     matchesConfiguredSecret = matches || matchesConfiguredSecret;
   }
-  if (configuredSecrets.length > 0 && !matchesConfiguredSecret) {
+  const namedSecretConfigured = rotationStore
+    ? rotationStore.requiresClientSecret(tenant.tenantId, client.clientId)
+    : Boolean(client.clientSecrets?.length);
+  if ((configuredSecrets.length > 0 || namedSecretConfigured) && !matchesConfiguredSecret) {
     return undefined;
   }
 

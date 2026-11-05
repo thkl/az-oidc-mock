@@ -5,6 +5,7 @@ import type { MfaStore } from "../oidc/mfa.js";
 import type { PasswordStore } from "../oidc/passwords.js";
 import type { PasskeyStore } from "../oidc/passkeys.js";
 import type { OidcState } from "../oidc/state.js";
+import type { ClientSecretRotationPermission, ClientSecretRotationStore } from "../oidc/client-secret-rotation.js";
 
 export type RouteContext = {
   getConfig: () => AppConfig;
@@ -18,4 +19,7 @@ export type RouteContext = {
   sessionSecret: string;
   configPath?: string;
   onConfigSaved?: (config: AppConfig) => void;
+  rotationManagerId?: string;
+  rotationApiAllowlist?: ClientSecretRotationPermission[];
+  clientSecretRotationStore?: ClientSecretRotationStore;
 };

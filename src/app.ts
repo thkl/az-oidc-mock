@@ -8,9 +8,11 @@ import { PasswordStore } from "./oidc/passwords.js";
 import { createDefaultSessionSecret } from "./oidc/session.js";
 import { OidcState } from "./oidc/state.js";
 import { registerAdminRoutes } from "./routes/admin.js";
+import { registerClientSecretRotationRoutes } from "./routes/client-secret-rotation.js";
 import { registerInternalRoutes } from "./routes/internal.js";
 import { registerOidcRoutes } from "./routes/oidc.js";
 import type { RouteContext } from "./routes/types.js";
+import type { ClientSecretRotationPermission, ClientSecretRotationStore } from "./oidc/client-secret-rotation.js";
 
 type AppDeps = {
   config: AppConfig | (() => AppConfig);
@@ -21,6 +23,9 @@ type AppDeps = {
   passkeyStore?: PasskeyStore;
   mfaStore?: MfaStore;
   adminToken?: string;
+  rotationManagerId?: string;
+  rotationApiAllowlist?: ClientSecretRotationPermission[];
+  clientSecretRotationStore?: ClientSecretRotationStore;
   sessionSecret?: string;
   configPath?: string;
   onConfigSaved?: (config: AppConfig) => void;
@@ -38,6 +43,9 @@ export function createApp({
   passkeyStore = new PasskeyStore(),
   mfaStore = new MfaStore(),
   adminToken,
+  rotationManagerId,
+  rotationApiAllowlist,
+  clientSecretRotationStore,
   sessionSecret = createDefaultSessionSecret(),
   configPath,
   onConfigSaved
@@ -55,6 +63,9 @@ export function createApp({
     passkeyStore,
     mfaStore,
     adminToken,
+    rotationManagerId,
+    rotationApiAllowlist,
+    clientSecretRotationStore,
     sessionSecret,
     configPath,
     onConfigSaved
@@ -88,6 +99,7 @@ export function createApp({
   });
 
   registerAdminRoutes(app, routeContext);
+  registerClientSecretRotationRoutes(app, routeContext);
   registerOidcRoutes(app, routeContext);
   registerInternalRoutes(app, routeContext);
 
