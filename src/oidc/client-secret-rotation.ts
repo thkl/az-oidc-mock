@@ -551,6 +551,109 @@ export class ClientSecretRotationStore {
   }
 
   /**
+   * Immediately replaces an API-managed named secret and revokes every older version.
+   * This is reserved for authenticated administrative emergency response.
+   */
+  emergencyRotate(input: {
+    tenantId: string;
+    client: MockClient;
+    name: string;
+    now?: number;
+  }): { secretVersion: string; clientSecret: string; createdAt: number; expiresAt?: number } {
+    const now = input.now ?? Date.now();
+    this.expire(now);
+    this.syncConfiguredClient(input.tenantId, input.client, now);
+    const record = this.findCredential(input.tenantId, input.client.clientId, input.name);
+    if (!record || record.source !== "api") {
+      throw new ClientSecretRotationError(404, "credential_not_found", "API-managed named credential was not found");
+    }
+
+    let secret = crypto.randomBytes(32).toString("base64url");
+    for (let attempt = 0; attempt < 4 && this.secretIsInUse(input.tenantId, input.client.clientId, input.client, secret); attempt += 1) {
+      secret = crypto.randomBytes(32).toString("base64url");
+    }
+    if (this.secretIsInUse(input.tenantId, input.client.clientId, input.client, secret)) {
+      throw new Error("Unable to generate a unique client secret");
+    }
+
+    const next = this.cloneData();
+    const nextRecord = next.credentials.find((candidate) =>
+      candidate.tenantId === input.tenantId && candidate.clientId === input.client.clientId && candidate.name === input.name
+    );
+    if (!nextRecord) throw new Error("Rotation store changed while emergency rotating a secret");
+    for (const version of nextRecord.versions) version.state = "revoked";
+    nextRecord.pendingRotationId = undefined;
+
+    const versionId = this.createId("sv_");
+    const expiresAt = nextRecord.lifetimeDaysApplied
+      ? now + nextRecord.lifetimeDaysApplied * 24 * 60 * 60 * 1000
+      : undefined;
+    nextRecord.versions.push({
+      versionId,
+      verifier: this.verifier(secret),
+      secretHint: `...${secret.slice(-5)}`,
+      state: "current",
+      createdAt: now,
+      activatedAt: now,
+      ...(nextRecord.lifetimeDaysApplied ? { lifetimeStartedAt: now } : {}),
+      ...(expiresAt !== undefined ? { expiresAt } : {})
+    });
+    for (const operation of next.operations) {
+      if (operation.tenantId === input.tenantId && operation.clientId === input.client.clientId && operation.name === input.name) {
+        operation.status = "revoked";
+        delete operation.encryptedSecret;
+      }
+    }
+    for (const capability of next.capabilities) {
+      if (capability.tenantId === input.tenantId && capability.clientId === input.client.clientId && capability.name === input.name) {
+        capability.status = "revoked";
+      }
+    }
+    this.commit(next);
+    return { secretVersion: versionId, clientSecret: secret, createdAt: now, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+  }
+
+  /**
+   * Immediately revokes every version and manager capability for an API-managed name.
+   */
+  emergencyRevoke(input: {
+    tenantId: string;
+    client: MockClient;
+    name: string;
+    now?: number;
+  }): { revokedVersionIds: string[]; alreadyRevoked: boolean } {
+    const now = input.now ?? Date.now();
+    this.expire(now);
+    this.syncConfiguredClient(input.tenantId, input.client, now);
+    const record = this.findCredential(input.tenantId, input.client.clientId, input.name);
+    if (!record || record.source !== "api") {
+      throw new ClientSecretRotationError(404, "credential_not_found", "API-managed named credential was not found");
+    }
+
+    const alreadyRevoked = record.versions.every((version) => version.state === "revoked") && !record.pendingRotationId;
+    const next = this.cloneData();
+    const nextRecord = next.credentials.find((candidate) =>
+      candidate.tenantId === input.tenantId && candidate.clientId === input.client.clientId && candidate.name === input.name
+    );
+    if (!nextRecord) throw new Error("Rotation store changed while emergency revoking a secret");
+    for (const version of nextRecord.versions) version.state = "revoked";
+    nextRecord.pendingRotationId = undefined;
+    for (const operation of next.operations) {
+      if (operation.tenantId === input.tenantId && operation.clientId === input.client.clientId && operation.name === input.name) {
+        operation.status = "revoked";
+        delete operation.encryptedSecret;
+      }
+    }
+    for (const capability of next.capabilities) {
+      if (capability.tenantId === input.tenantId && capability.clientId === input.client.clientId && capability.name === input.name) {
+        capability.status = "revoked";
+      }
+    }
+    this.commit(next);
+    return { revokedVersionIds: nextRecord.versions.map((version) => version.versionId), alreadyRevoked };
+  }
+
+  /**
    * Checks managed named credentials and imports changed static config values as verifier records.
    */
   verifyNamedSecret(tenantId: string, client: MockClient, candidate: string): boolean {

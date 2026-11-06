@@ -4,6 +4,7 @@ import type { AppConfig, MockClient, MockTenant, MockUser } from "../config.js";
 import { saveConfig } from "../config.js";
 import { constantTimeEqual, getSessionUser, setSessionUser } from "../oidc/session.js";
 import { resolveEffectiveUser } from "../oidc/users.js";
+import { ClientSecretRotationError } from "../oidc/client-secret-rotation.js";
 import { findClient, findTenant, findUser, validateRedirectUri, validateScopes } from "../oidc/validation.js";
 import { renderAdminPage, renderAdminSetupPage } from "../views/admin.js";
 import { readObjectBody, readString } from "./http.js";
@@ -133,6 +134,132 @@ export function registerAdminRoutes(app: Express, context: RouteContext): void {
         error: "invalid_config",
         error_description: error instanceof Error ? error.message : String(error)
       });
+    }
+  });
+
+  /**
+   * Immediately rotates an API-managed named client secret for emergency response.
+   */
+  app.post("/internal/admin/api/client-secrets/emergency-rotate", (req, res) => {
+    const config = context.getConfig();
+    const auth = getAdminRequestUser(config, req, context.sessionSecret);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+      return;
+    }
+    if (!verifyAdminCsrfToken(req, auth.user, context.sessionSecret)) {
+      res.status(403).json({ error: "csrf_failed", error_description: "Admin CSRF token is missing or invalid" });
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Pragma", "no-cache");
+
+    const body = readObjectBody(req);
+    const tenantId = readString(body.tenant_id) ?? readString(body.tenantId);
+    const clientId = readString(body.client_id) ?? readString(body.clientId);
+    const name = (readString(body.name) ?? "").trim().toLowerCase();
+    const tenant = tenantId ? findTenant(config, tenantId) : undefined;
+    const client = tenant && clientId ? findClient(tenant, clientId) : undefined;
+    if (!tenant || !client || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) {
+      res.status(400).json({ error: "invalid_request", error_description: "A valid tenant_id, client_id, and named secret are required" });
+      return;
+    }
+    const store = context.clientSecretRotationStore;
+    if (!store) {
+      res.status(503).json({ error: "rotation_store_unavailable", error_description: "Client secret rotation storage is unavailable" });
+      return;
+    }
+
+    try {
+      const rotated = store.emergencyRotate({ tenantId: tenant.tenantId, client, name });
+      context.logger.warn("admin emergency client secret rotation completed", {
+        adminUserSub: auth.user.sub,
+        tenantId: tenant.tenantId,
+        clientId: client.clientId,
+        name,
+        secretVersion: rotated.secretVersion
+      });
+      res.status(201).json({
+        name,
+        secret_version: rotated.secretVersion,
+        client_secret: rotated.clientSecret,
+        state: "current",
+        created_at: new Date(rotated.createdAt).toISOString(),
+        ...(rotated.expiresAt !== undefined ? { expires_at: new Date(rotated.expiresAt).toISOString() } : {})
+      });
+    } catch (error) {
+      if (error instanceof ClientSecretRotationError) {
+        res.status(error.status).json({ error: error.code, error_description: error.message });
+        return;
+      }
+      context.logger.error("admin emergency client secret rotation failed", {
+        adminUserSub: auth.user.sub,
+        tenantId: tenant.tenantId,
+        clientId: client.clientId,
+        name,
+        error: error instanceof Error ? error.message : "unknown error"
+      });
+      res.status(503).json({ error: "rotation_store_unavailable", error_description: "Unable to rotate the client secret" });
+    }
+  });
+
+  /**
+   * Immediately revokes an API-managed named client secret and its rotation capabilities.
+   */
+  app.post("/internal/admin/api/client-secrets/emergency-revoke", (req, res) => {
+    const config = context.getConfig();
+    const auth = getAdminRequestUser(config, req, context.sessionSecret);
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error, error_description: auth.description });
+      return;
+    }
+    if (!verifyAdminCsrfToken(req, auth.user, context.sessionSecret)) {
+      res.status(403).json({ error: "csrf_failed", error_description: "Admin CSRF token is missing or invalid" });
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Pragma", "no-cache");
+
+    const body = readObjectBody(req);
+    const tenantId = readString(body.tenant_id) ?? readString(body.tenantId);
+    const clientId = readString(body.client_id) ?? readString(body.clientId);
+    const name = (readString(body.name) ?? "").trim().toLowerCase();
+    const tenant = tenantId ? findTenant(config, tenantId) : undefined;
+    const client = tenant && clientId ? findClient(tenant, clientId) : undefined;
+    if (!tenant || !client || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) {
+      res.status(400).json({ error: "invalid_request", error_description: "A valid tenant_id, client_id, and named secret are required" });
+      return;
+    }
+    const store = context.clientSecretRotationStore;
+    if (!store) {
+      res.status(503).json({ error: "rotation_store_unavailable", error_description: "Client secret rotation storage is unavailable" });
+      return;
+    }
+
+    try {
+      const result = store.emergencyRevoke({ tenantId: tenant.tenantId, client, name });
+      context.logger.warn("admin emergency client secret revocation completed", {
+        adminUserSub: auth.user.sub,
+        tenantId: tenant.tenantId,
+        clientId: client.clientId,
+        name,
+        revokedVersionCount: result.revokedVersionIds.length,
+        alreadyRevoked: result.alreadyRevoked
+      });
+      res.json({ revoked: true, name, revoked_versions: result.revokedVersionIds.length, already_revoked: result.alreadyRevoked });
+    } catch (error) {
+      if (error instanceof ClientSecretRotationError) {
+        res.status(error.status).json({ error: error.code, error_description: error.message });
+        return;
+      }
+      context.logger.error("admin emergency client secret revocation failed", {
+        adminUserSub: auth.user.sub,
+        tenantId: tenant.tenantId,
+        clientId: client.clientId,
+        name,
+        error: error instanceof Error ? error.message : "unknown error"
+      });
+      res.status(503).json({ error: "rotation_store_unavailable", error_description: "Unable to revoke the client secret" });
     }
   });
 

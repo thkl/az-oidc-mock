@@ -162,6 +162,14 @@ The manager calls this only after it has durably saved the new value in its secr
 
 The server allows only one pending rotation per credential name. Other names for the same client can rotate independently. There is no separate abort endpoint; `DELETE` revokes all versions for a name.
 
+### Emergency rotate or revoke from the admin UI
+
+API-managed names have **Emergency Rotate** and **Revoke** actions in the authenticated admin UI. These actions use the admin session and CSRF token, so an operator does not need the compromised client secret or a manager capability.
+
+Emergency rotation creates a replacement and makes it current immediately. It revokes every previous version and outstanding capability for that name without the normal grace period, then shows the new value once. Update the manager vault and consuming workload as soon as it is copied. Emergency revoke immediately disables every version and capability for the name. If it was the client's only credential, the client remains confidential but authentication fails until an administrator or manager installs a replacement.
+
+The standard manager `DELETE` endpoint remains available and requires the target client's current secret. Use the admin emergency action when that credential may be compromised or unavailable.
+
 ### Revoke a named credential
 
 ```http

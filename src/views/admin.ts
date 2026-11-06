@@ -360,7 +360,7 @@ export function renderAdminPage(user: MockUser): string {
                 </div>
                 <div v-for="credential in apiManagedSecrets(selectedClient)" :key="credential.name" class="secret-item">
                   <div><strong>{{ credential.name }}</strong><small>{{ secretSummary(selectedClient, credential.name) }}</small></div>
-                  <span class="secret-source">Rotation API</span>
+                  <div class="actions"><span class="secret-source">Rotation API</span><button type="button" @click="emergencyRotateApiSecret(credential.name)">Emergency Rotate</button><button class="danger" type="button" @click="emergencyRevokeApiSecret(credential.name)">Revoke</button></div>
                 </div>
                 <p v-if="!configuredNamedSecrets(selectedClient).length && !apiManagedSecrets(selectedClient).length" class="meta">No named secrets configured.</p>
               </div>
@@ -543,6 +543,12 @@ export function renderAdminPage(user: MockUser): string {
     // Selection helpers keep render/update handlers compact.
     const selectedTenant = () => state.editable.tenants.find((tenant) => tenant.tenantId === state.selectedTenantId) || state.editable.tenants[0];
     const selectedClient = () => selectedTenant()?.clients[state.selectedClientIndex];
+    const restoreClientSelection = (tenantId, clientId) => {
+      const tenant = state.editable.tenants.find((item) => item.tenantId === tenantId);
+      if (!tenant) return;
+      state.selectedTenantId = tenantId;
+      state.selectedClientIndex = Math.max(0, tenant.clients.findIndex((item) => item.clientId === clientId));
+    };
     const selectedUser = () => selectedTenant()?.users[state.selectedUserIndex];
     const shareTargets = () => selectedTenant() && selectedUser() ? state.editable.tenants.filter((tenant) => tenant !== selectedTenant()) : [];
     const shareUserOptions = () => selectedTenant()
@@ -567,6 +573,8 @@ export function renderAdminPage(user: MockUser): string {
       const version = secretVersion(client, name);
       if (!version) return 'Value hidden · No expiry configured';
       const hint = version.secret_hint || 'Value hidden';
+      if (version.state === 'revoked') return hint + ' · Revoked';
+      if (version.state === 'expired' && !version.expires_at) return hint + ' · Expired';
       if (!version.expires_at) return hint + ' · No expiry configured';
       const expires = new Intl.DateTimeFormat(undefined, { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(version.expires_at));
       return hint + (version.state === 'expired' ? ' · Expired ' : ' · Expires ') + expires;
@@ -633,9 +641,10 @@ export function renderAdminPage(user: MockUser): string {
         });
         dialog.showModal();
         requestAnimationFrame(() => {
-          const target = dialog.querySelector(state.namedSecretDialog?.stage === 'reveal' ? '#named-secret-value' : '#named-secret-name');
+          const isReveal = state.namedSecretDialog?.stage === 'reveal' || state.namedSecretDialog?.stage === 'emergency-reveal';
+          const target = dialog.querySelector(isReveal ? '#named-secret-value' : '#named-secret-name');
           target?.focus();
-          if (state.namedSecretDialog?.stage === 'reveal') target?.select();
+          if (isReveal) target?.select();
         });
       }
     };
@@ -695,7 +704,7 @@ export function renderAdminPage(user: MockUser): string {
           <div class="secret-item"><div><strong>\${escapeText(credential.name)}</strong><small>\${escapeText(secretSummary(client, credential.name))}</small></div><button class="danger" type="button" data-action="delete-named-secret" data-index="\${index}" aria-label="Delete secret \${escapeText(credential.name)}">Delete</button></div>
         \`;
         }).join('')}</div>\` : ''}
-        \${apiManagedSecrets(client).map((credential) => \`<div class="secret-item"><div><strong>\${escapeText(credential.name)}</strong><small>\${escapeText(secretSummary(client, credential.name))}</small></div><span class="secret-source">Rotation API</span></div>\`).join('')}
+        \${apiManagedSecrets(client).map((credential) => \`<div class="secret-item"><div><strong>\${escapeText(credential.name)}</strong><small>\${escapeText(secretSummary(client, credential.name))}</small></div><div class="actions"><span class="secret-source">Rotation API</span><button type="button" data-action="emergency-rotate-secret" data-name="\${escapeText(credential.name)}" \${state.saving ? 'disabled' : ''}>Emergency Rotate</button><button class="danger" type="button" data-action="emergency-revoke-secret" data-name="\${escapeText(credential.name)}" \${state.saving ? 'disabled' : ''}>Revoke</button></div></div>\`).join('')}
         \${!configuredNamedSecrets(client).length && !apiManagedSecrets(client).length ? '<p class="meta">No named secrets configured.</p>' : ''}
       </div>
       <label>Named Secret Lifetime (days) <input data-field="client.clientSecretLifetimeDaysText" type="number" min="1" max="3650" step="1" placeholder="No expiry" value="\${escapeText(client.clientSecretLifetimeDaysText || '')}"></label>
@@ -711,14 +720,15 @@ export function renderAdminPage(user: MockUser): string {
     const renderNamedSecretDialog = () => {
       const secretDialog = state.namedSecretDialog;
       if (!secretDialog) return '';
-      if (secretDialog.stage === 'reveal') {
+      if (secretDialog.stage === 'reveal' || secretDialog.stage === 'emergency-reveal') {
+        const emergency = secretDialog.stage === 'emergency-reveal';
         return \`<dialog id="named-secret-dialog" aria-labelledby="named-secret-title" aria-describedby="named-secret-description">
           <div class="secret-dialog-content">
-            <h2 id="named-secret-title">Your new secret</h2>
-            <p id="named-secret-description">Copy this value now. It will be hidden when you close this window.</p>
+            <h2 id="named-secret-title">\${emergency ? 'Emergency replacement secret' : 'Your new secret'}</h2>
+            <p id="named-secret-description">\${emergency ? 'This secret is active now and previous versions were revoked immediately. Update the consuming workload with this value.' : 'Copy this value now. It will be hidden when you close this window.'}</p>
             <label><span>Secret for \${escapeText(secretDialog.name)}</span><div class="secret-row"><input id="named-secret-value" class="secret-value" readonly value="\${escapeText(secretDialog.secret)}"><button type="button" data-action="copy-named-secret">Copy</button></div></label>
             <p role="status">\${escapeText(secretDialog.copyMessage || 'Store this value in a password manager or vault.')}</p>
-            <div class="actions"><button class="primary" type="button" data-action="confirm-copied">I’ve copied it</button></div>
+            <div class="actions"><button class="primary" type="button" data-action="\${emergency ? 'confirm-emergency-copied' : 'confirm-copied'}">\${emergency ? 'I’ve stored it' : 'I’ve copied it'}</button></div>
           </div>
         </dialog>\`;
       }
@@ -820,6 +830,9 @@ export function renderAdminPage(user: MockUser): string {
       if (action === 'create-named-secret') return createNamedSecret();
       if (action === 'copy-named-secret') return copyNamedSecret();
       if (action === 'confirm-copied') return confirmNamedSecretCopied();
+      if (action === 'confirm-emergency-copied') return confirmEmergencySecretCopied();
+      if (action === 'emergency-rotate-secret') return emergencyRotateApiSecret(event.currentTarget.dataset.name);
+      if (action === 'emergency-revoke-secret') return emergencyRevokeApiSecret(event.currentTarget.dataset.name);
       if (action === 'delete-named-secret') return deleteNamedSecret(Number(event.currentTarget.dataset.index));
       if (action === 'generate-client-secret') { selectedClient().clientSecret = 'az_mock-sk_' + randomBase64Url(24); return render(); }
       if (action === 'remove-client') return removeClient();
@@ -946,13 +959,78 @@ export function renderAdminPage(user: MockUser): string {
     // Copies the one-time value when clipboard access is available.
     const copyNamedSecret = async () => {
       const secretDialog = state.namedSecretDialog;
-      if (!secretDialog || secretDialog.stage !== 'reveal') return;
+      if (!secretDialog || (secretDialog.stage !== 'reveal' && secretDialog.stage !== 'emergency-reveal')) return;
       try {
         await navigator.clipboard.writeText(secretDialog.secret);
         secretDialog.copyMessage = 'Copied to clipboard. Store it in a password manager or vault.';
       } catch {
         secretDialog.copyMessage = 'Clipboard access is unavailable. Select and copy the value above.';
       }
+      render();
+    };
+    // Replaces an API-managed value immediately and shows the new value once.
+    const emergencyRotateApiSecret = async (name) => {
+      const tenant = selectedTenant();
+      const client = selectedClient();
+      if (!tenant || !client || !confirm('Emergency rotate "' + name + '" now? All previous versions and outstanding rotation capabilities will be revoked immediately, without a grace period. The new secret will become active before you can update its consumers.')) return;
+      state.saving = true;
+      state.status = { type: '', message: '' };
+      render();
+      try {
+        const response = await fetch('/internal/admin/api/client-secrets/emergency-rotate', {
+          method: 'POST',
+          headers: adminJsonHeaders(),
+          body: JSON.stringify({ tenant_id: tenant.tenantId, client_id: client.clientId, name })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error_description || 'Unable to emergency rotate this secret');
+        state.saving = false;
+        state.namedSecretDialog = { stage: 'emergency-reveal', name, tenantId: tenant.tenantId, clientId: client.clientId, secret: payload.client_secret, copyMessage: 'The replacement is active. Store it in the manager and update the consuming workload now.' };
+        render();
+      } catch (error) {
+        state.saving = false;
+        state.status = { type: 'error', message: error.message };
+        render();
+      }
+    };
+    // Revokes all API-managed versions immediately, including any pending rotation.
+    const emergencyRevokeApiSecret = async (name) => {
+      const tenant = selectedTenant();
+      const client = selectedClient();
+      if (!tenant || !client || !confirm('Immediately revoke every version of "' + name + '" and its outstanding rotation capabilities? If this is the client’s only current credential, client authentication will stop until a replacement is added.')) return;
+      state.saving = true;
+      state.status = { type: '', message: '' };
+      render();
+      try {
+        const response = await fetch('/internal/admin/api/client-secrets/emergency-revoke', {
+          method: 'POST',
+          headers: adminJsonHeaders(),
+          body: JSON.stringify({ tenant_id: tenant.tenantId, client_id: client.clientId, name })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error_description || 'Unable to emergency revoke this secret');
+        state.saving = false;
+        await load();
+        restoreClientSelection(tenant.tenantId, client.clientId);
+        state.status = { type: 'ok', message: 'All versions of "' + name + '" and their rotation capabilities are revoked.' };
+        render();
+      } catch (error) {
+        state.saving = false;
+        state.status = { type: 'error', message: error.message };
+        render();
+      }
+    };
+    // Closes the one-time emergency reveal after the admin confirms storage.
+    const confirmEmergencySecretCopied = async () => {
+      const secretDialog = state.namedSecretDialog;
+      if (!secretDialog || secretDialog.stage !== 'emergency-reveal') return;
+      const name = secretDialog.name;
+      const tenantId = secretDialog.tenantId;
+      const clientId = secretDialog.clientId;
+      state.namedSecretDialog = null;
+      await load();
+      if (tenantId && clientId) restoreClientSelection(tenantId, clientId);
+      state.status = { type: 'ok', message: 'Emergency replacement for "' + name + '" is active. Previous versions were revoked immediately.' };
       render();
     };
     // Adds the generated credential to the pending config after the user confirms copying it.
