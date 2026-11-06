@@ -21,6 +21,7 @@ Add a `clientSecrets` array to a client in `config.json`:
     { "name": "test", "secret": "<test-secret>" },
     { "name": "prod", "secret": "<prod-secret>" }
   ],
+  "rotationAllowedNames": ["test", "prod"],
   "redirectUris": ["https://orders.example.test/callback"],
   "allowedScopes": ["openid", "profile"],
   "enabled": true
@@ -28,6 +29,8 @@ Add a `clientSecrets` array to a client in `config.json`:
 ```
 
 Names are case-insensitive and normalized to lowercase. They may contain letters, digits, `-`, and `_`, must start with a letter or digit, and may be up to 32 characters. A client may have up to 20 named secrets. Names and values must be unique within that client. Existing clients with only `clientSecret` continue to work.
+
+To enable API rotation in the admin UI, select the client and enter its permitted names in **Rotation API Allowed Names**, one per line, then save the configuration. The setting is stored on that client as `rotationAllowedNames`; an empty list disables API rotation for it. Names may be authorized before the corresponding secret exists, so a manager can create the first named secret.
 
 The token endpoint does not receive the name; it matches the supplied `client_secret` against accepted values. The admin UI can create a named value in a dialog and displays names without their values afterward. Static values in `config.json` remain plaintext, so protect its filesystem permissions and backups. Values created by the rotation API are stored as verifiers and are never returned by list or config-read endpoints.
 
@@ -45,7 +48,7 @@ The app does not enforce HTTPS itself or validate `X-Forwarded-Proto`. The deplo
 
 Use separate client IDs for environments when they need separate redirect URIs, scopes, or client-level audit boundaries. Named credentials allow independent secret lifecycle for environments that must share one client ID; they do not create separate OAuth client identities.
 
-The allowlist is JSON in `OIDC_MOCK_ROTATION_ALLOWLIST`. Names are case-insensitive and must be listed individually; the list endpoint returns only allowed names. For example:
+`OIDC_MOCK_ROTATION_ALLOWLIST` remains available as an optional environment-based compatibility grant. It is no longer required when the per-client `rotationAllowedNames` setting is configured. Names are case-insensitive and must be listed individually; the list endpoint returns only allowed names. For example:
 
 ```json
 [
@@ -84,7 +87,7 @@ List and delete requests authenticate with the target client's current credentia
 
 ## API
 
-All routes are tenant-scoped and check the exact tenant, client, and credential name against the allowlist. Token exchange, list, and delete calls use the target client's current credential via HTTP Basic. Create, rotate, and activate calls use the scoped capability returned by the token exchange. mTLS and `private_key_jwt` are not implemented by these routes.
+All routes are tenant-scoped and check the exact tenant, client, and credential name against the per-client UI settings or optional environment compatibility grants. Token exchange, list, and delete calls use the target client's current credential via HTTP Basic. The pending-secret check uses the pending secret via HTTP Basic. Create, rotate, and activate calls use the scoped capability returned by the token exchange. mTLS and `private_key_jwt` are not implemented by these routes.
 
 ### List credential metadata
 
@@ -94,6 +97,20 @@ Authorization: Basic base64({clientId}:<current-client-secret>)
 ```
 
 Return names and version metadata only. Version metadata includes the ID, state, creation/activation/expiry times, and optional last-use time. Never return secret values from a list or read endpoint. The response is `Cache-Control: no-store`.
+
+### Verify a pending secret
+
+The manager can prove it has the pending secret before updating the workload. It sends the target client ID and pending secret with HTTP Basic authentication, and names the credential being checked:
+
+```http
+POST /internal/v1/tenants/{tenantId}/clients/{clientId}/check-token
+Authorization: Basic base64({clientId}:<pending-client-secret>)
+Content-Type: application/json
+
+{"name":"dev","operation":"check"}
+```
+
+The endpoint returns `200` with `{"valid":true,"state":"pending"}` only when that secret matches an unexpired pending version for this exact tenant, client, and name. A mismatched, current, grace-period, or expired secret returns `403`. It never returns the secret. The per-client allowed-name setting also applies.
 
 ### Create a named credential
 

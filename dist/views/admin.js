@@ -357,6 +357,8 @@ export function renderAdminPage(user) {
                 </div>
                 <p v-else class="meta">No named secrets configured.</p>
               </div>
+              <label>Rotation API Allowed Names <textarea v-model="selectedClient.rotationAllowedNamesText" spellcheck="false" placeholder="dev&#10;prod"></textarea></label>
+              <p class="meta">One name per line. These names authorize the client to request rotation tokens. Leave empty to disable API rotation for this client.</p>
               <div class="checks">
                 <label class="check"><input v-model="selectedClient.enabled" type="checkbox"> Enabled</label>
               </div>
@@ -463,6 +465,8 @@ export function renderAdminPage(user) {
         for (const client of tenant.clients) {
           client.redirectUrisText = (client.redirectUris || []).join('\\n');
           client.allowedScopesText = (client.allowedScopes || []).join(' ');
+          client.rotationAllowedNames = client.rotationAllowedNames || [];
+          client.rotationAllowedNamesText = client.rotationAllowedNames.join('\\n');
         }
         for (const user of tenant.users) {
           user.rolesText = (user.roles || []).join('\\n');
@@ -486,10 +490,13 @@ export function renderAdminPage(user) {
         for (const client of tenant.clients) {
           client.redirectUris = splitLines(client.redirectUrisText);
           client.allowedScopes = splitTokens(client.allowedScopesText);
+          client.rotationAllowedNames = splitTokens(client.rotationAllowedNamesText).map((name) => name.toLowerCase());
+          if (!client.rotationAllowedNames.length) delete client.rotationAllowedNames;
           client.clientSecrets = client.clientSecrets || [];
           if (!client.clientSecret) delete client.clientSecret;
           delete client.redirectUrisText;
           delete client.allowedScopesText;
+          delete client.rotationAllowedNamesText;
           delete client.clientSecretsText;
         }
         for (const user of tenant.users) {
@@ -651,6 +658,8 @@ export function renderAdminPage(user) {
           <div class="secret-item"><div><strong>\${escapeText(credential.name)}</strong><small>Value hidden</small></div><button class="danger" type="button" data-action="delete-named-secret" data-index="\${index}" aria-label="Delete secret \${escapeText(credential.name)}">Delete</button></div>
         \`).join('')}</div>\` : '<p class="meta">No named secrets configured.</p>'}
       </div>
+      <label>Rotation API Allowed Names <textarea data-field="client.rotationAllowedNamesText" spellcheck="false" placeholder="dev&#10;prod">\${escapeText(client.rotationAllowedNamesText || '')}</textarea></label>
+      <p class="meta">One name per line. These names authorize the client to request rotation tokens. Leave empty to disable API rotation for this client.</p>
       <div class="checks"><label class="check"><input data-field="client.enabled" type="checkbox" \${client.enabled ? 'checked' : ''}> Enabled</label></div>
       <label>Redirect URIs <textarea data-field="client.redirectUrisText" spellcheck="false">\${escapeText(client.redirectUrisText || '')}</textarea></label>
       <label>Allowed Scopes <textarea data-field="client.allowedScopesText" spellcheck="false">\${escapeText(client.allowedScopesText || '')}</textarea></label>
@@ -739,6 +748,7 @@ export function renderAdminPage(user) {
       if (field === 'client.enabled') client.enabled = value;
       if (field === 'client.redirectUrisText') client.redirectUrisText = value;
       if (field === 'client.allowedScopesText') client.allowedScopesText = value;
+      if (field === 'client.rotationAllowedNamesText') client.rotationAllowedNamesText = value;
       if (field === 'user.sub') user.sub = value.trim();
       if (field === 'user.name') user.name = value.trim();
       if (field === 'user.email') user.email = value.trim();
@@ -831,7 +841,7 @@ export function renderAdminPage(user) {
     // Adds a tenant with one default client and one default user.
     const addTenant = () => {
       const tenant = decorate({ tenants: [blankTenant()] }).tenants[0];
-      tenant.clients.push({ clientId: 'new-client', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
+      tenant.clients.push({ clientId: 'new-client', rotationAllowedNames: [], rotationAllowedNamesText: '', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
       tenant.users.push({ sub: 'new-user', name: 'New User', email: 'user@example.test', preferred_username: 'user@example.test', roles: [], rolesText: '', claims: {}, claimsText: '{}' });
       state.editable.tenants.push(tenant);
       state.selectedTenantId = tenant.tenantId; render();
@@ -850,7 +860,7 @@ export function renderAdminPage(user) {
     };
     // Adds a client to the selected tenant.
     const addClient = () => {
-      selectedTenant().clients.push({ clientId: 'new-client', clientSecret: '', clientSecrets: [], redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
+      selectedTenant().clients.push({ clientId: 'new-client', clientSecret: '', clientSecrets: [], rotationAllowedNames: [], rotationAllowedNamesText: '', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
       state.selectedClientIndex = selectedTenant().clients.length - 1; render();
     };
     // Opens the named-secret creation dialog for the selected client.

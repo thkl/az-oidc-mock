@@ -35,12 +35,10 @@ let config = loadConfig(configPath);
 const rotationStorePath = path.join(path.dirname(path.resolve(configPath)), "client-secret-rotations.json");
 const rotationStoreExists = fs.existsSync(rotationStorePath);
 const rotationStoreKeyPath = path.join(path.dirname(path.resolve(configPath)), "client-secret-rotation.key");
-const clientSecretRotationStore = rotationApiAllowlist.length > 0 || rotationStoreExists
-  ? new ClientSecretRotationStore(
-    rotationStorePath,
-    loadOrCreateClientSecretRotationKey(rotationStoreKeyPath, rotationStoreExists)
-  )
-  : undefined;
+const clientSecretRotationStore = new ClientSecretRotationStore(
+  rotationStorePath,
+  loadOrCreateClientSecretRotationKey(rotationStoreKeyPath, rotationStoreExists)
+);
 clientSecretRotationStore?.synchronizeConfig(config);
 const keys = await createSigningKeys();
 const logger = createLogger();

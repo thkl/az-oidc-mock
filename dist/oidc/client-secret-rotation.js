@@ -417,6 +417,36 @@ export class ClientSecretRotationStore {
         return matchesLegacy || Boolean(matchedVersionId);
     }
     /**
+     * Verifies possession of the pending version for exactly one client and credential name.
+     */
+    verifyPendingSecret(tenantId, client, name, candidate) {
+        const now = Date.now();
+        this.expire(now);
+        this.syncConfiguredClient(tenantId, client, now);
+        const record = this.findCredential(tenantId, client.clientId, name);
+        if (!record)
+            return false;
+        const candidateVerifier = this.verifier(candidate);
+        let matchedVersionId;
+        for (const version of record.versions) {
+            const matches = constantTimeEqual(candidateVerifier, version.verifier);
+            if (version.state === "pending" && this.isAccepted(version, now) && matches) {
+                matchedVersionId = version.versionId;
+            }
+        }
+        if (matchedVersionId) {
+            const next = this.cloneData();
+            const nextVersion = next.credentials
+                .find((credential) => credential.tenantId === tenantId && credential.clientId === client.clientId && credential.name === name)
+                ?.versions.find((version) => version.versionId === matchedVersionId);
+            if (nextVersion && (!nextVersion.lastUsedAt || now - nextVersion.lastUsedAt >= 60_000)) {
+                nextVersion.lastUsedAt = now;
+                this.commit(next);
+            }
+        }
+        return Boolean(matchedVersionId);
+    }
+    /**
      * Issues an opaque, short-lived capability for one named create or rotation operation.
      */
     issueRotationCapability(input) {

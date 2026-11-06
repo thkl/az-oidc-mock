@@ -19,15 +19,15 @@ export function registerClientSecretRotationRoutes(app, context) {
             return invalidRequest(res, "name must be 1–32 letters, numbers, hyphens, or underscores and start with a letter or number");
         if (kind !== "create" && kind !== "rotate")
             return invalidRequest(res, "operation must be create or rotate");
-        if (!isAllowed(context.rotationApiAllowlist ?? [], tenantId, clientId, name))
-            return forbidden(res);
         const config = context.getConfig();
-        const store = synchronizeStore(context, res, { tenantId, clientId, name });
-        if (!store)
-            return;
         const target = findTarget(config, tenantId, clientId);
         if (!target)
             return notFound(res);
+        if (!isAllowed(context, tenantId, clientId, target.client, name))
+            return forbidden(res);
+        const store = synchronizeStore(context, res, { tenantId, clientId, name });
+        if (!store)
+            return;
         const credentials = readBasicClientCredentials(req);
         if (!target.client.enabled || !credentials || credentials.clientId !== clientId) {
             return unauthorized(res, "Current client credentials are required");
@@ -58,27 +58,73 @@ export function registerClientSecretRotationRoutes(app, context) {
             handleStoreError(context, res, error, { tenantId, clientId, name });
         }
     });
+    app.post("/internal/v1/tenants/:tenantId/clients/:clientId/check-token", (req, res) => {
+        setNoStoreHeaders(res);
+        const tenantId = readParamString(req.params.tenantId);
+        const clientId = readParamString(req.params.clientId);
+        if (!tenantId || !clientId)
+            return notFound(res);
+        const body = readObjectBody(req);
+        const name = normalizeName(readString(body.name));
+        if (!name)
+            return invalidRequest(res, "Credential name is invalid");
+        if (readString(body.operation) !== "check")
+            return invalidRequest(res, "operation must be check");
+        const config = context.getConfig();
+        const target = findTarget(config, tenantId, clientId);
+        if (!target)
+            return notFound(res);
+        if (!isAllowed(context, tenantId, clientId, target.client, name))
+            return forbidden(res);
+        if (!target.client.enabled)
+            return forbidden(res);
+        const credentials = readBasicClientCredentials(req);
+        if (!credentials || credentials.clientId !== clientId) {
+            return unauthorized(res, "Client ID and pending client secret are required");
+        }
+        const store = synchronizeStore(context, res, { tenantId, clientId, name, operation: "check" });
+        if (!store)
+            return;
+        try {
+            if (!store.verifyPendingSecret(tenantId, target.client, name, credentials.clientSecret)) {
+                res.status(403).json({
+                    error: "invalid_pending_secret",
+                    error_description: "Credentials do not match a pending secret for this name"
+                });
+                return;
+            }
+            res.status(200).json({
+                valid: true,
+                tenant_id: tenantId,
+                client_id: clientId,
+                name,
+                state: "pending"
+            });
+        }
+        catch (error) {
+            handleStoreError(context, res, error, { tenantId, clientId, name, operation: "check" });
+        }
+    });
     app.get("/internal/v1/tenants/:tenantId/clients/:clientId/secrets", (req, res) => {
         setNoStoreHeaders(res);
         const tenantId = readParamString(req.params.tenantId);
         const clientId = readParamString(req.params.clientId);
         if (!tenantId || !clientId)
             return notFound(res);
-        const permissions = permissionsFor(context.rotationApiAllowlist ?? [], tenantId, clientId);
-        if (!permissions.length)
-            return forbidden(res);
         const config = context.getConfig();
-        const store = synchronizeStore(context, res, { tenantId, clientId });
-        if (!store)
-            return;
         const target = findTarget(config, tenantId, clientId);
         if (!target)
             return notFound(res);
+        const allowedNames = allowedNamesFor(context, tenantId, clientId, target.client);
+        if (!allowedNames.size)
+            return forbidden(res);
+        const store = synchronizeStore(context, res, { tenantId, clientId });
+        if (!store)
+            return;
         try {
             if (!authenticateClient(req, tenantId, clientId, target.client, store)) {
                 return unauthorized(res, "Current client credentials are required");
             }
-            const allowedNames = new Set(permissions.flatMap((permission) => permission.names));
             const secrets = store
                 .listClient(tenantId, target.client)
                 .filter((credential) => allowedNames.has(credential.name));
@@ -98,8 +144,6 @@ export function registerClientSecretRotationRoutes(app, context) {
         const name = normalizeName(readString(body.name));
         if (!name)
             return invalidRequest(res, "name must be 1–32 letters, numbers, hyphens, or underscores and start with a letter or number");
-        if (!isAllowed(context.rotationApiAllowlist ?? [], tenantId, clientId, name))
-            return forbidden(res);
         return startRotation(context, req, res, { tenantId, clientId, name, kind: "create" });
     });
     app.post("/internal/v1/tenants/:tenantId/clients/:clientId/secrets/:name/rotations", (req, res) => {
@@ -111,8 +155,6 @@ export function registerClientSecretRotationRoutes(app, context) {
             return notFound(res);
         if (!name)
             return invalidRequest(res, "Credential name is invalid");
-        if (!isAllowed(context.rotationApiAllowlist ?? [], tenantId, clientId, name))
-            return forbidden(res);
         return startRotation(context, req, res, { tenantId, clientId, name, kind: "rotate" });
     });
     app.post("/internal/v1/tenants/:tenantId/clients/:clientId/secrets/:name/rotations/:rotationId/activate", (req, res) => {
@@ -125,10 +167,13 @@ export function registerClientSecretRotationRoutes(app, context) {
             return notFound(res);
         if (!name)
             return invalidRequest(res, "Credential name is invalid");
-        if (!isAllowed(context.rotationApiAllowlist ?? [], tenantId, clientId, name))
-            return forbidden(res);
         if (!rotationId)
             return invalidRequest(res, "Rotation ID is required");
+        const target = findTarget(context.getConfig(), tenantId, clientId);
+        if (!target)
+            return notFound(res);
+        if (!isAllowed(context, tenantId, clientId, target.client, name))
+            return forbidden(res);
         const store = synchronizeStore(context, res, { tenantId, clientId, name });
         if (!store)
             return;
@@ -183,15 +228,15 @@ export function registerClientSecretRotationRoutes(app, context) {
             return notFound(res);
         if (!name)
             return invalidRequest(res, "Credential name is invalid");
-        if (!isAllowed(context.rotationApiAllowlist ?? [], tenantId, clientId, name))
-            return forbidden(res);
         const config = context.getConfig();
-        const store = synchronizeStore(context, res, { tenantId, clientId, name });
-        if (!store)
-            return;
         const target = findTarget(config, tenantId, clientId);
         if (!target)
             return notFound(res);
+        if (!isAllowed(context, tenantId, clientId, target.client, name))
+            return forbidden(res);
+        const store = synchronizeStore(context, res, { tenantId, clientId, name });
+        if (!store)
+            return;
         try {
             if (!authenticateClient(req, tenantId, clientId, target.client, store)) {
                 return unauthorized(res, "Current client credentials are required");
@@ -217,12 +262,15 @@ function startRotation(context, req, res, scope) {
     const idempotencyKey = readIdempotencyKey(req);
     if (!idempotencyKey)
         return invalidRequest(res, "A valid Idempotency-Key header is required");
+    const config = context.getConfig();
+    const target = findTarget(config, scope.tenantId, scope.clientId);
+    if (!target)
+        return notFound(res);
+    if (!isAllowed(context, scope.tenantId, scope.clientId, target.client, scope.name))
+        return forbidden(res);
     const store = synchronizeStore(context, res, scope);
     if (!store)
         return;
-    const target = findTarget(context.getConfig(), scope.tenantId, scope.clientId);
-    if (!target)
-        return notFound(res);
     if (!target.client.enabled)
         return forbidden(res);
     const accessToken = readBearerToken(req);
@@ -311,8 +359,14 @@ function synchronizeStore(context, res, audit) {
 function permissionsFor(allowlist, tenantId, clientId) {
     return allowlist.filter((permission) => permission.tenantId === tenantId && permission.clientId === clientId);
 }
-function isAllowed(allowlist, tenantId, clientId, name) {
-    return permissionsFor(allowlist, tenantId, clientId).some((permission) => permission.names.includes(name));
+function allowedNamesFor(context, tenantId, clientId, client) {
+    const configuredNames = client.rotationAllowedNames ?? [];
+    const environmentNames = permissionsFor(context.rotationApiAllowlist ?? [], tenantId, clientId)
+        .flatMap((permission) => permission.names);
+    return new Set([...configuredNames, ...environmentNames]);
+}
+function isAllowed(context, tenantId, clientId, client, name) {
+    return allowedNamesFor(context, tenantId, clientId, client).has(name);
 }
 function findTarget(config, tenantId, clientId) {
     const tenant = findTenant(config, tenantId);

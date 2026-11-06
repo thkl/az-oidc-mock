@@ -27,10 +27,15 @@ const namedClientSecretSchema = z.object({
   secret: z.string().min(1)
 });
 
+const rotationAllowedNameSchema = z.string().trim().min(1).max(32)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/)
+  .transform((name) => name.toLowerCase());
+
 const clientSchema = z.object({
   clientId: z.string().min(1),
   clientSecret: z.string().optional(),
   clientSecrets: z.array(namedClientSecretSchema).max(20).optional(),
+  rotationAllowedNames: z.array(rotationAllowedNameSchema).max(20).optional(),
   redirectUris: z.array(z.string().url()).min(1),
   allowedScopes: z.array(z.string()).default(["openid", "profile", "email"]),
   enabled: z.boolean().default(true)
@@ -57,6 +62,17 @@ const clientSchema = z.object({
       });
     }
     values.add(credential.secret);
+  }
+  const rotationNames = new Set<string>();
+  for (const [index, name] of (client.rotationAllowedNames ?? []).entries()) {
+    if (rotationNames.has(name)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["rotationAllowedNames", index],
+        message: `Duplicate allowed rotation name: ${name}`
+      });
+    }
+    rotationNames.add(name);
   }
 });
 
