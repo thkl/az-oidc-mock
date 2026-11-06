@@ -227,6 +227,7 @@ export function renderAdminPage(user) {
     .secret-item > div { display: grid; gap: 2px; min-width: 0; }
     .secret-item strong { font-size: 12px; font-weight: 460; overflow-wrap: anywhere; }
     .secret-item small { color: var(--muted); font-size: 10px; }
+    .secret-source { color: var(--muted); font-size: 10px; white-space: nowrap; }
     dialog { width: min(460px, calc(100vw - 32px)); max-width: none; padding: 0; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--text); background: var(--surface-2); box-shadow: 0 24px 80px rgba(2, 10, 24, .38); }
     dialog::backdrop { background: rgba(5, 17, 35, .58); backdrop-filter: blur(3px); }
     .secret-dialog-content { display: grid; gap: 14px; padding: 20px; }
@@ -349,14 +350,20 @@ export function renderAdminPage(user) {
               <div class="named-secrets">
                 <div class="actions"><strong>Named Client Secrets</strong><button type="button" @click="openNamedSecretDialog">Add Secret</button></div>
                 <p class="meta">Secret values are shown once when created. Save configuration to apply changes.</p>
-                <div v-if="selectedClient.clientSecrets.length" class="named-secrets">
-                  <div v-for="(credential, index) in selectedClient.clientSecrets" :key="credential.name" class="secret-item">
-                    <div><strong>{{ credential.name }}</strong><small>Value hidden</small></div>
-                    <button class="danger" type="button" @click="deleteNamedSecret(index)">Delete</button>
+                <div v-if="configuredNamedSecrets(selectedClient).length" class="named-secrets">
+                  <div v-for="(credential, index) in configuredNamedSecrets(selectedClient)" :key="credential.name" class="secret-item">
+                    <div><strong>{{ credential.name }}</strong><small>{{ secretSummary(selectedClient, credential.name) }}</small></div>
+                    <button class="danger" type="button" @click="deleteNamedSecret(selectedClient.clientSecrets.indexOf(credential))">Delete</button>
                   </div>
                 </div>
-                <p v-else class="meta">No named secrets configured.</p>
+                <div v-for="credential in apiManagedSecrets(selectedClient)" :key="credential.name" class="secret-item">
+                  <div><strong>{{ credential.name }}</strong><small>{{ secretSummary(selectedClient, credential.name) }}</small></div>
+                  <span class="secret-source">Rotation API</span>
+                </div>
+                <p v-if="!configuredNamedSecrets(selectedClient).length && !apiManagedSecrets(selectedClient).length" class="meta">No named secrets configured.</p>
               </div>
+              <label>Named Secret Lifetime (days) <input v-model="selectedClient.clientSecretLifetimeDaysText" type="number" min="1" max="3650" step="1" placeholder="No expiry"></label>
+              <p class="meta">Optional. New secrets start their lifetime when activated; existing secrets start when you first save this setting. Leave blank for no expiry.</p>
               <label>Rotation API Allowed Names <textarea v-model="selectedClient.rotationAllowedNamesText" spellcheck="false" placeholder="dev&#10;prod"></textarea></label>
               <p class="meta">One name per line. These names authorize the client to request rotation tokens. Leave empty to disable API rotation for this client.</p>
               <div class="checks">
@@ -467,6 +474,8 @@ export function renderAdminPage(user) {
           client.allowedScopesText = (client.allowedScopes || []).join(' ');
           client.rotationAllowedNames = client.rotationAllowedNames || [];
           client.rotationAllowedNamesText = client.rotationAllowedNames.join('\\n');
+          client.clientSecretLifetimeDaysText = client.clientSecretLifetimeDays == null ? '' : String(client.clientSecretLifetimeDays);
+          client.rotationSecretMetadata = client.rotationSecretMetadata || [];
         }
         for (const user of tenant.users) {
           user.rolesText = (user.roles || []).join('\\n');
@@ -492,7 +501,11 @@ export function renderAdminPage(user) {
           client.allowedScopes = splitTokens(client.allowedScopesText);
           client.rotationAllowedNames = splitTokens(client.rotationAllowedNamesText).map((name) => name.toLowerCase());
           if (!client.rotationAllowedNames.length) delete client.rotationAllowedNames;
+          if (String(client.clientSecretLifetimeDaysText || '').trim() === '') delete client.clientSecretLifetimeDays;
+          else client.clientSecretLifetimeDays = Number(client.clientSecretLifetimeDaysText);
           client.clientSecrets = client.clientSecrets || [];
+          delete client.clientSecretLifetimeDaysText;
+          delete client.rotationSecretMetadata;
           if (!client.clientSecret) delete client.clientSecret;
           delete client.redirectUrisText;
           delete client.allowedScopesText;
@@ -540,6 +553,26 @@ export function renderAdminPage(user) {
       : [];
     // Reads the latest runtime 2FA/passkey status for a tenant user.
     const userAuthStatus = (tenant, user) => state.authStatus?.[tenant?.tenantId]?.[user?.sub] || { mfa: false, passkey: false };
+    // Uses version metadata only; the full secret is never returned by the admin API.
+    const secretVersion = (client, name) => {
+      const credential = (client.rotationSecretMetadata || []).find((item) => item.name.toLowerCase() === String(name).toLowerCase());
+      if (!credential?.versions?.length) return undefined;
+      return credential.versions.find((version) => version.state === 'current') ||
+        credential.versions.find((version) => version.state === 'pending') ||
+        [...credential.versions].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0];
+    };
+    const secretSummary = (client, name) => {
+      const version = secretVersion(client, name);
+      if (!version) return 'Value hidden · No expiry configured';
+      const hint = version.secret_hint || 'Value hidden';
+      if (!version.expires_at) return hint + ' · No expiry configured';
+      const expires = new Intl.DateTimeFormat(undefined, { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(version.expires_at));
+      return hint + (version.state === 'expired' ? ' · Expired ' : ' · Expires ') + expires;
+    };
+    const apiManagedSecrets = (client) => (client.rotationSecretMetadata || []).filter((credential) => credential.source === 'api');
+    const configuredNamedSecrets = (client) => (client.clientSecrets || []).filter((credential) =>
+      !(client.rotationSecretMetadata || []).some((metadata) => metadata.source === 'api' && metadata.name.toLowerCase() === credential.name.toLowerCase())
+    );
     // Renders compact text badges so security state is visible without relying on color alone.
     const renderAuthBadges = (tenant, user) => {
       const status = userAuthStatus(tenant, user);
@@ -654,10 +687,17 @@ export function renderAdminPage(user) {
       <div class="named-secrets">
         <div class="actions"><strong>Named Client Secrets</strong><button type="button" data-action="add-named-secret">Add Secret</button></div>
         <p class="meta">Secret values are shown once when created. Save configuration to apply changes.</p>
-        \${client.clientSecrets?.length ? \`<div class="named-secrets">\${client.clientSecrets.map((credential, index) => \`
-          <div class="secret-item"><div><strong>\${escapeText(credential.name)}</strong><small>Value hidden</small></div><button class="danger" type="button" data-action="delete-named-secret" data-index="\${index}" aria-label="Delete secret \${escapeText(credential.name)}">Delete</button></div>
-        \`).join('')}</div>\` : '<p class="meta">No named secrets configured.</p>'}
+        \${configuredNamedSecrets(client).length ? \`<div class="named-secrets">\${configuredNamedSecrets(client).map((credential) => {
+          const index = client.clientSecrets.indexOf(credential);
+          return \`
+          <div class="secret-item"><div><strong>\${escapeText(credential.name)}</strong><small>\${escapeText(secretSummary(client, credential.name))}</small></div><button class="danger" type="button" data-action="delete-named-secret" data-index="\${index}" aria-label="Delete secret \${escapeText(credential.name)}">Delete</button></div>
+        \`;
+        }).join('')}</div>\` : ''}
+        \${apiManagedSecrets(client).map((credential) => \`<div class="secret-item"><div><strong>\${escapeText(credential.name)}</strong><small>\${escapeText(secretSummary(client, credential.name))}</small></div><span class="secret-source">Rotation API</span></div>\`).join('')}
+        \${!configuredNamedSecrets(client).length && !apiManagedSecrets(client).length ? '<p class="meta">No named secrets configured.</p>' : ''}
       </div>
+      <label>Named Secret Lifetime (days) <input data-field="client.clientSecretLifetimeDaysText" type="number" min="1" max="3650" step="1" placeholder="No expiry" value="\${escapeText(client.clientSecretLifetimeDaysText || '')}"></label>
+      <p class="meta">Optional, maximum 3650 days. New secrets start their lifetime when activated; existing secrets start when you first save this setting. Leave blank for no expiry.</p>
       <label>Rotation API Allowed Names <textarea data-field="client.rotationAllowedNamesText" spellcheck="false" placeholder="dev&#10;prod">\${escapeText(client.rotationAllowedNamesText || '')}</textarea></label>
       <p class="meta">One name per line. These names authorize the client to request rotation tokens. Leave empty to disable API rotation for this client.</p>
       <div class="checks"><label class="check"><input data-field="client.enabled" type="checkbox" \${client.enabled ? 'checked' : ''}> Enabled</label></div>
@@ -745,6 +785,7 @@ export function renderAdminPage(user) {
       if (field === 'tenant.passkeysMandatory') { tenant.passkeysMandatory = value; tenant.passkeysEnabled = tenant.passkeysEnabled || value; }
       if (field === 'client.clientId') client.clientId = value.trim();
       if (field === 'client.clientSecret') client.clientSecret = value;
+      if (field === 'client.clientSecretLifetimeDaysText') client.clientSecretLifetimeDaysText = value;
       if (field === 'client.enabled') client.enabled = value;
       if (field === 'client.redirectUrisText') client.redirectUrisText = value;
       if (field === 'client.allowedScopesText') client.allowedScopesText = value;
@@ -841,7 +882,7 @@ export function renderAdminPage(user) {
     // Adds a tenant with one default client and one default user.
     const addTenant = () => {
       const tenant = decorate({ tenants: [blankTenant()] }).tenants[0];
-      tenant.clients.push({ clientId: 'new-client', rotationAllowedNames: [], rotationAllowedNamesText: '', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
+      tenant.clients.push({ clientId: 'new-client', rotationAllowedNames: [], rotationAllowedNamesText: '', clientSecretLifetimeDaysText: '', rotationSecretMetadata: [], redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
       tenant.users.push({ sub: 'new-user', name: 'New User', email: 'user@example.test', preferred_username: 'user@example.test', roles: [], rolesText: '', claims: {}, claimsText: '{}' });
       state.editable.tenants.push(tenant);
       state.selectedTenantId = tenant.tenantId; render();
@@ -860,7 +901,7 @@ export function renderAdminPage(user) {
     };
     // Adds a client to the selected tenant.
     const addClient = () => {
-      selectedTenant().clients.push({ clientId: 'new-client', clientSecret: '', clientSecrets: [], rotationAllowedNames: [], rotationAllowedNamesText: '', redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
+      selectedTenant().clients.push({ clientId: 'new-client', clientSecret: '', clientSecrets: [], rotationAllowedNames: [], rotationAllowedNamesText: '', clientSecretLifetimeDaysText: '', rotationSecretMetadata: [], redirectUris: [], redirectUrisText: '', allowedScopes: ['openid', 'profile', 'email'], allowedScopesText: 'openid profile email', enabled: true });
       state.selectedClientIndex = selectedTenant().clients.length - 1; render();
     };
     // Opens the named-secret creation dialog for the selected client.

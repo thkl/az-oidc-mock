@@ -76,7 +76,7 @@ export function registerAdminRoutes(app, context) {
             return;
         }
         res.json({
-            config: redactConfigSecrets(context.getConfig()),
+            config: redactConfigSecrets(context.getConfig(), context.clientSecretRotationStore),
             authStatus: createAuthStatus(context.getConfig(), context),
             user: { sub: auth.user.sub, name: auth.user.name, email: auth.user.email },
             csrfToken: createAdminCsrfToken(auth.user, context.sessionSecret)
@@ -106,7 +106,7 @@ export function registerAdminRoutes(app, context) {
             const saved = saveConfig(context.configPath, mergeMaskedClientSecrets(context.getConfig(), nextConfig));
             context.onConfigSaved?.(saved);
             context.logger.info("admin config saved", { userSub: auth.user.sub, tenantCount: saved.tenants.length });
-            res.json({ config: redactConfigSecrets(saved), authStatus: createAuthStatus(saved, context) });
+            res.json({ config: redactConfigSecrets(saved, context.clientSecretRotationStore), authStatus: createAuthStatus(saved, context) });
         }
         catch (error) {
             res.status(400).json({
@@ -247,7 +247,7 @@ function createAuthStatus(config, context) {
 /**
  * Replaces client secrets with a mask before config is sent to the browser.
  */
-function redactConfigSecrets(config) {
+function redactConfigSecrets(config, rotationStore = undefined) {
     return {
         ...config,
         tenants: config.tenants.map((tenant) => ({
@@ -255,6 +255,7 @@ function redactConfigSecrets(config) {
             clients: tenant.clients.map((client) => ({
                 ...client,
                 ...(client.clientSecret ? { clientSecret: SECRET_MASK } : {}),
+                rotationSecretMetadata: rotationStore?.listClient(tenant.tenantId, client) ?? [],
                 ...(client.clientSecrets ? {
                     clientSecrets: client.clientSecrets.map((credential) => ({ ...credential, secret: SECRET_MASK }))
                 } : {})

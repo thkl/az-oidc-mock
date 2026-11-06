@@ -35,6 +35,7 @@ const clientSchema = z.object({
   clientId: z.string().min(1),
   clientSecret: z.string().optional(),
   clientSecrets: z.array(namedClientSecretSchema).max(20).optional(),
+  clientSecretLifetimeDays: z.number().int().min(1).max(3650).optional(),
   rotationAllowedNames: z.array(rotationAllowedNameSchema).max(20).optional(),
   redirectUris: z.array(z.string().url()).min(1),
   allowedScopes: z.array(z.string()).default(["openid", "profile", "email"]),

@@ -40,7 +40,8 @@ export class ClientSecretRotationStore {
             clients: tenant.clients.map((client) => ({
                 clientId: client.clientId,
                 clientSecret: client.clientSecret,
-                clientSecrets: client.clientSecrets
+                clientSecrets: client.clientSecrets,
+                clientSecretLifetimeDays: client.clientSecretLifetimeDays
             }))
         }));
         const fingerprint = crypto.createHash("sha256").update(JSON.stringify(configSnapshot)).digest("hex");
@@ -104,9 +105,13 @@ export class ClientSecretRotationStore {
             .sort((left, right) => left.name.localeCompare(right.name))
             .map((credential) => ({
             name: credential.name,
+            source: credential.source,
             versions: credential.versions.map((version) => ({
                 secret_version: version.versionId,
-                state: version.state,
+                ...(version.secretHint ? { secret_hint: version.secretHint } : {}),
+                state: version.state === "current" && version.expiresAt !== undefined && version.expiresAt <= now
+                    ? "expired"
+                    : version.state,
                 created_at: new Date(version.createdAt).toISOString(),
                 ...(version.activatedAt !== undefined ? { activated_at: new Date(version.activatedAt).toISOString() } : {}),
                 ...(version.expiresAt !== undefined ? { expires_at: new Date(version.expiresAt).toISOString() } : {}),
@@ -180,7 +185,14 @@ export class ClientSecretRotationStore {
         const next = this.cloneData();
         let record = next.credentials.find((credential) => credential.tenantId === input.tenantId && credential.clientId === clientId && credential.name === input.name);
         if (!record) {
-            record = { tenantId: input.tenantId, clientId, name: input.name, source: "api", versions: [] };
+            record = {
+                tenantId: input.tenantId,
+                clientId,
+                name: input.name,
+                source: "api",
+                versions: [],
+                lifetimeDaysApplied: input.client.clientSecretLifetimeDays
+            };
             next.credentials.push(record);
         }
         record.source = "api";
@@ -190,6 +202,7 @@ export class ClientSecretRotationStore {
         const version = {
             versionId,
             verifier: this.verifier(secret),
+            secretHint: `...${secret.slice(-5)}`,
             state: "pending",
             createdAt: now,
             expiresAt: pendingExpiresAt
@@ -273,10 +286,10 @@ export class ClientSecretRotationStore {
         if (!nextRecord || !nextOperation || !nextVersion) {
             throw new Error("Rotation store changed while activating a secret");
         }
-        const previous = nextRecord.versions.find((candidate) => candidate.state === "current");
+        const previous = nextRecord.versions.find((candidate) => candidate.state === "current" && this.isAccepted(candidate, now));
         let previousSecretGraceExpiresAt;
         for (const olderVersion of nextRecord.versions) {
-            if (olderVersion.state === "grace") {
+            if (olderVersion.state === "grace" || (olderVersion.state === "current" && olderVersion !== previous)) {
                 olderVersion.state = "expired";
             }
         }
@@ -287,7 +300,19 @@ export class ClientSecretRotationStore {
         }
         nextVersion.state = "current";
         nextVersion.activatedAt = now;
-        delete nextVersion.expiresAt;
+        if (nextRecord.lifetimeDaysApplied) {
+            nextVersion.lifetimeStartedAt = now;
+            nextVersion.expiresAt = now + nextRecord.lifetimeDaysApplied * 24 * 60 * 60 * 1000;
+        }
+        else {
+            delete nextVersion.lifetimeStartedAt;
+            delete nextVersion.expiresAt;
+        }
+        if (!nextVersion.secretHint && nextOperation.encryptedSecret) {
+            nextVersion.secretHint = `...${this.decryptSecret(nextOperation.encryptedSecret).slice(-5)}`;
+        }
+        if (nextVersion.expiresAt === undefined)
+            delete nextVersion.expiresAt;
         nextRecord.pendingRotationId = undefined;
         nextOperation.status = "activated";
         delete nextOperation.encryptedSecret;
@@ -552,7 +577,8 @@ export class ClientSecretRotationStore {
     requiresClientSecret(tenantId, clientId, now = Date.now()) {
         this.expire(now);
         return this.data.credentials.some((credential) => credential.tenantId === tenantId && credential.clientId === clientId &&
-            (credential.source === "api" || credential.versions.some((version) => this.isAccepted(version, now))));
+            (credential.source === "api" || credential.versions.some((version) => (version.state === "current" || version.state === "pending" || version.state === "grace") &&
+                (this.isAccepted(version, now) || (version.state === "current" && version.expiresAt !== undefined)))));
     }
     syncConfiguredClient(tenantId, client, now) {
         const configured = new Map((client.clientSecrets ?? []).map((credential) => [credential.name.toLowerCase(), credential.secret]));
@@ -562,8 +588,20 @@ export class ClientSecretRotationStore {
             let record = next.credentials.find((credential) => credential.tenantId === tenantId && credential.clientId === client.clientId && credential.name === name);
             if (!record) {
                 this.assertUniqueConfiguredVerifier(next, tenantId, client.clientId, name, this.verifier(secret));
-                record = { tenantId, clientId: client.clientId, name, source: "config", versions: [] };
-                record.versions.push({ versionId: this.createId("sv_"), verifier: this.verifier(secret), state: "current", createdAt: now, activatedAt: now });
+                record = {
+                    tenantId,
+                    clientId: client.clientId,
+                    name,
+                    source: "config",
+                    versions: [{
+                            versionId: this.createId("sv_"),
+                            verifier: this.verifier(secret),
+                            secretHint: `...${secret.slice(-5)}`,
+                            state: "current",
+                            createdAt: now,
+                            activatedAt: now
+                        }]
+                };
                 next.credentials.push(record);
                 changed = true;
                 continue;
@@ -574,6 +612,10 @@ export class ClientSecretRotationStore {
             const current = record.versions.find((version) => version.state === "current");
             const nextVerifier = this.verifier(secret);
             if (current && constantTimeEqual(current.verifier, nextVerifier)) {
+                if (!current.secretHint) {
+                    current.secretHint = `...${secret.slice(-5)}`;
+                    changed = true;
+                }
                 continue;
             }
             this.assertUniqueConfiguredVerifier(next, tenantId, client.clientId, name, nextVerifier);
@@ -582,10 +624,43 @@ export class ClientSecretRotationStore {
                     version.state = "expired";
                 }
             }
-            record.versions.push({ versionId: this.createId("sv_"), verifier: nextVerifier, state: "current", createdAt: now, activatedAt: now });
+            record.versions.push({
+                versionId: this.createId("sv_"),
+                verifier: nextVerifier,
+                secretHint: `...${secret.slice(-5)}`,
+                state: "current",
+                createdAt: now,
+                activatedAt: now
+            });
             changed = true;
         }
         for (const record of next.credentials) {
+            if (record.tenantId === tenantId && record.clientId === client.clientId) {
+                for (const version of record.versions) {
+                    if (version.state !== "current")
+                        continue;
+                    if (!client.clientSecretLifetimeDays) {
+                        if (version.lifetimeStartedAt !== undefined || version.expiresAt !== undefined)
+                            changed = true;
+                        delete version.lifetimeStartedAt;
+                        delete version.expiresAt;
+                        continue;
+                    }
+                    if (version.lifetimeStartedAt === undefined) {
+                        version.lifetimeStartedAt = now;
+                        changed = true;
+                    }
+                    const expiresAt = version.lifetimeStartedAt + client.clientSecretLifetimeDays * 24 * 60 * 60 * 1000;
+                    if (version.expiresAt !== expiresAt) {
+                        version.expiresAt = expiresAt;
+                        changed = true;
+                    }
+                }
+                if (record.lifetimeDaysApplied !== client.clientSecretLifetimeDays) {
+                    record.lifetimeDaysApplied = client.clientSecretLifetimeDays;
+                    changed = true;
+                }
+            }
             if (record.tenantId !== tenantId || record.clientId !== client.clientId || record.source !== "config" || configured.has(record.name)) {
                 continue;
             }

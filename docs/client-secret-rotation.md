@@ -21,6 +21,7 @@ Add a `clientSecrets` array to a client in `config.json`:
     { "name": "test", "secret": "<test-secret>" },
     { "name": "prod", "secret": "<prod-secret>" }
   ],
+  "clientSecretLifetimeDays": 365,
   "rotationAllowedNames": ["test", "prod"],
   "redirectUris": ["https://orders.example.test/callback"],
   "allowedScopes": ["openid", "profile"],
@@ -29,6 +30,8 @@ Add a `clientSecrets` array to a client in `config.json`:
 ```
 
 Names are case-insensitive and normalized to lowercase. They may contain letters, digits, `-`, and `_`, must start with a letter or digit, and may be up to 32 characters. A client may have up to 20 named secrets. Names and values must be unique within that client. Existing clients with only `clientSecret` continue to work.
+
+`clientSecretLifetimeDays` is optional and accepts an integer from 1 to 3650. It applies to named secrets only, including secrets managed through the rotation API; new versions start their lifetime when they become current. If you first enable a lifetime for an existing current secret, its countdown starts when the setting is saved. Changing the number recalculates expiry from that countdown start; clearing the setting removes automatic expiry. The admin client list shows each available secret hint (the last five characters) and its localized expiry date; it never shows the full secret. Legacy `clientSecret` values do not use this lifetime setting.
 
 To enable API rotation in the admin UI, select the client and enter its permitted names in **Rotation API Allowed Names**, one per line, then save the configuration. The setting is stored on that client as `rotationAllowedNames`; an empty list disables API rotation for it. Names may be authorized before the corresponding secret exists, so a manager can create the first named secret.
 
@@ -96,7 +99,7 @@ GET /internal/v1/tenants/{tenantId}/clients/{clientId}/secrets
 Authorization: Basic base64({clientId}:<current-client-secret>)
 ```
 
-Return names and version metadata only. Version metadata includes the ID, state, creation/activation/expiry times, and optional last-use time. Never return secret values from a list or read endpoint. The response is `Cache-Control: no-store`.
+Return names, whether each credential is `config` or `api` managed, and version metadata only. Version metadata includes the ID, optional last-five-character hint, state, creation/activation/expiry times, and optional last-use time. Never return full secret values from a list or read endpoint. The response is `Cache-Control: no-store`.
 
 ### Verify a pending secret
 
@@ -155,7 +158,7 @@ POST /internal/v1/tenants/{tenantId}/clients/{clientId}/secrets/{name}/rotations
 Authorization: Bearer <same-rotation-capability>
 ```
 
-The manager calls this only after it has durably saved the new value in its secret store and updated the consuming workload. The new version becomes current. The old version remains accepted for a five-minute grace period, then expires. A pending operation that is not activated before its expiry is discarded and leaves the existing current version active.
+The manager calls this only after it has durably saved the new value in its secret store and updated the consuming workload. The new version becomes current and its configured lifetime begins. The old version remains accepted for a five-minute grace period, then expires. A pending operation that is not activated before its expiry is discarded and leaves the existing current version active.
 
 The server allows only one pending rotation per credential name. Other names for the same client can rotate independently. There is no separate abort endpoint; `DELETE` revokes all versions for a name.
 
