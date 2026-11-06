@@ -1,18 +1,22 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { ensurePrivateFilePermissions } from "../private-file.js";
 import { isAuthLevel } from "./auth-level.js";
 import { resolveEffectiveUser } from "./users.js";
 /**
  * Reads and verifies the tenant-scoped login session cookie.
  */
-export function getSessionUser(req, config, tenant, sessionSecret) {
+export function getSessionUser(req, config, tenant, sessionSecret, passkeyStore) {
     const cookie = parseCookies(req.header("cookie"))[`az_oidc_mock_${tenant.tenantId}`];
     const session = cookie ? verifySessionCookie(cookie, tenant.tenantId, sessionSecret) : undefined;
     if (!session) {
         return undefined;
     }
-    const user = resolveEffectiveUser(config, tenant, session.userSub)?.user;
-    return user ? { user, authLevel: session.authLevel } : undefined;
+    const resolvedUser = resolveEffectiveUser(config, tenant, session.userSub);
+    if (resolvedUser && tenant.passkeysMandatory && !passkeyStore?.isEnrolled(resolvedUser.homeTenant.tenantId, resolvedUser.user.sub)) {
+        return undefined;
+    }
+    return resolvedUser ? { user: resolvedUser.user, authLevel: session.authLevel } : undefined;
 }
 /**
  * Issues a signed HTTP-only login session cookie for the tenant.
@@ -166,6 +170,7 @@ function parseBase64UrlJson(value) {
  * Reads a persisted secret and rejects empty or truncated files instead of invalidating sessions silently.
  */
 function readPersistedSessionSecret(secretPath) {
+    ensurePrivateFilePermissions(secretPath);
     const secret = fs.readFileSync(secretPath, "utf8").trim();
     if (secret.length < 32) {
         throw new Error(`Persisted session secret must contain at least 32 characters: ${secretPath}`);

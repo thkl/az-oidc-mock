@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 import { isAuthLevel } from "./auth-level.js";
+import { createCodeVerifier } from "./pkce.js";
+import { ensurePrivateFilePermissions, writePrivateFileAtomically } from "../private-file.js";
 /**
  * Stores short-lived mock authorization codes and refresh tokens.
  */
@@ -9,6 +10,7 @@ export class OidcState {
     refreshTokenStorePath;
     authorizationCodes = new Map();
     refreshTokens = new Map();
+    pkceTransactions = new Map();
     /**
      * Creates state storage and hydrates persisted refresh tokens when configured.
      */
@@ -30,6 +32,30 @@ export class OidcState {
             expiresAt: Date.now() + 5 * 60 * 1000
         });
         return code;
+    }
+    /**
+     * Starts a short-lived PKCE transaction for first-party authorization flows.
+     */
+    createPkceTransaction() {
+        this.prunePkceTransactions();
+        if (this.pkceTransactions.size >= 10_000) {
+            return undefined;
+        }
+        const state = randomToken();
+        const verifier = createCodeVerifier();
+        this.pkceTransactions.set(state, { verifier, expiresAt: Date.now() + 5 * 60 * 1000 });
+        return { state, verifier };
+    }
+    /**
+     * Consumes a first-party PKCE verifier once when its state is returned.
+     */
+    consumePkceVerifier(state) {
+        const transaction = this.pkceTransactions.get(state);
+        this.pkceTransactions.delete(state);
+        if (!transaction || transaction.expiresAt < Date.now()) {
+            return undefined;
+        }
+        return transaction.verifier;
     }
     /**
      * Consumes and removes an authorization code if it exists and is not expired.
@@ -77,6 +103,7 @@ export class OidcState {
         if (!this.refreshTokenStorePath || !fs.existsSync(this.refreshTokenStorePath)) {
             return;
         }
+        ensurePrivateFilePermissions(this.refreshTokenStorePath);
         const raw = fs.readFileSync(this.refreshTokenStorePath, "utf8");
         const parsed = JSON.parse(raw);
         if (parsed.version !== 1 || !Array.isArray(parsed.refreshTokens)) {
@@ -106,15 +133,19 @@ export class OidcState {
                 this.refreshTokens.delete(token);
             }
         }
-        const dir = path.dirname(this.refreshTokenStorePath);
-        fs.mkdirSync(dir, { recursive: true });
-        const tmpPath = `${this.refreshTokenStorePath}.${process.pid}.tmp`;
         const payload = {
             version: 1,
             refreshTokens: [...this.refreshTokens.values()]
         };
-        fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), "utf8");
-        fs.renameSync(tmpPath, this.refreshTokenStorePath);
+        writePrivateFileAtomically(this.refreshTokenStorePath, JSON.stringify(payload, null, 2));
+    }
+    prunePkceTransactions() {
+        const now = Date.now();
+        for (const [state, transaction] of this.pkceTransactions) {
+            if (transaction.expiresAt < now) {
+                this.pkceTransactions.delete(state);
+            }
+        }
     }
 }
 /**

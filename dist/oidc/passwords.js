@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { ensurePrivateFilePermissions, writePrivateFileAtomically } from "../private-file.js";
 const HASH_ALGORITHM = "sha256";
 const HASH_ITERATIONS = 310_000;
 const HASH_KEY_LENGTH = 32;
@@ -67,6 +68,7 @@ export class PasswordStore {
             return undefined;
         }
         const resolved = path.resolve(this.passwdPath);
+        ensurePrivateFilePermissions(resolved);
         const lines = fs.readFileSync(resolved, "utf8").split(/\r?\n/);
         // Comment and blank lines allow operators to annotate the passwd file.
         for (const line of lines) {
@@ -88,7 +90,9 @@ export class PasswordStore {
         if (!this.passwdPath || !fs.existsSync(this.passwdPath)) {
             return [];
         }
-        return fs.readFileSync(path.resolve(this.passwdPath), "utf8")
+        const resolved = path.resolve(this.passwdPath);
+        ensurePrivateFilePermissions(resolved);
+        return fs.readFileSync(resolved, "utf8")
             .split(/\r?\n/)
             .map((line) => line.trim())
             .filter(Boolean);
@@ -101,10 +105,7 @@ export class PasswordStore {
             throw new Error("Password store path is not configured");
         }
         const resolved = path.resolve(this.passwdPath);
-        fs.mkdirSync(path.dirname(resolved), { recursive: true });
-        const tmpPath = `${resolved}.${process.pid}.tmp`;
-        fs.writeFileSync(tmpPath, records.length > 0 ? `${records.join("\n")}\n` : "", "utf8");
-        fs.renameSync(tmpPath, resolved);
+        writePrivateFileAtomically(resolved, records.length > 0 ? `${records.join("\n")}\n` : "");
     }
 }
 /**

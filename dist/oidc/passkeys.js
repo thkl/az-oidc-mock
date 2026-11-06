@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { ensurePrivateFilePermissions, writePrivateFileAtomically } from "../private-file.js";
 /**
  * Stores WebAuthn passkey credentials in memory or in passkeys.json.
  */
@@ -75,8 +76,10 @@ export class PasskeyStore {
         if (!fs.existsSync(this.storePath)) {
             return [];
         }
+        const resolved = path.resolve(this.storePath);
+        ensurePrivateFilePermissions(resolved);
         try {
-            const parsed = JSON.parse(fs.readFileSync(path.resolve(this.storePath), "utf8"));
+            const parsed = JSON.parse(fs.readFileSync(resolved, "utf8"));
             return Array.isArray(parsed) ? parsed.filter(isPasskeyRecord) : [];
         }
         catch {
@@ -96,10 +99,7 @@ export class PasskeyStore {
             return;
         }
         const resolved = path.resolve(this.storePath);
-        fs.mkdirSync(path.dirname(resolved), { recursive: true });
-        const tmpPath = `${resolved}.${process.pid}.tmp`;
-        fs.writeFileSync(tmpPath, `${JSON.stringify(records, null, 2)}\n`, "utf8");
-        fs.renameSync(tmpPath, resolved);
+        writePrivateFileAtomically(resolved, `${JSON.stringify(records, null, 2)}\n`);
     }
 }
 /**

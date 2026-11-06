@@ -4,3 +4,4 @@ config.json
 .DS_Store
 .agents
 graphify-out/
+docs/security-review.md

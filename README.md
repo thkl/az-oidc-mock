@@ -86,9 +86,17 @@ Refresh tokens are persisted next to the active config file in `refresh-tokens.j
 
 Secure tenant passwords are read from a `passwd` file next to the active config file. If `CONFIG_PATH=/config/config.json`, the password file is `/config/passwd`.
 
+The server applies owner-only (`0600`) permissions to the config, password, refresh-token, MFA, passkey, and session-secret files. Existing files are tightened when loaded or read. Keep the containing directory writable for persisted updates and accessible only to the service account.
+
 Set `OIDC_MOCK_ADMIN_TOKEN` to enable internal password-management endpoints for containerized deployments where editing `passwd` directly is inconvenient.
 
 Clients can use a legacy single `clientSecret` or multiple named entries under `clientSecrets`. For example, a client can have separate `test` and `prod` values; the OAuth token request still sends only `client_id` and `client_secret`. Named values are supported by configuration and token authentication. An optional `clientSecretLifetimeDays` setting expires named secrets after activation; the admin client list shows their last five characters and expiry time. Enable manager access per client by setting allowed rotation names in the admin UI. A manager authenticates with the target client's current credential, exchanges it for a short-lived capability scoped to one named create or rotation, and uses that capability to start and activate the operation. See [client-secret-rotation.md](docs/client-secret-rotation.md) for setup and endpoints.
+
+Clients without a legacy, named, or rotation-managed secret are public clients and must use PKCE with `code_challenge_method=S256`. Send the S256 `code_challenge` on the authorize request and the matching `code_verifier` when redeeming the code. Confidential clients may use PKCE as well. The built-in admin login uses PKCE automatically.
+
+Authentication and credential endpoints have in-process limits over five-minute windows. Login is limited to 10 requests per identity and source pair and 300 per source per tenant; passkey requests allow 30 per identity and source pair; token and rotation endpoints have separate client and source limits. A limited request returns `429` with `Retry-After`.
+
+By default, limits use the socket peer address and do not trust forwarded headers. If the app is reachable only through trusted reverse proxies, set `OIDC_MOCK_TRUST_PROXY_HOPS` to the number of proxy hops (for example, `1` for a single Traefik proxy) so limits use the originating client address. Keep the app port private when enabling this setting; configure matching limits at the proxy for multi-instance deployments.
 
 Verbose logging can be enabled in `config.json`:
 
@@ -145,7 +153,7 @@ Open the built-in admin console at:
 http://localhost:3000/internal/admin
 ```
 
-The admin console uses the mock itself for authentication. Configure a secure tenant named `internal` with a client named `internal-admin`. The signed-in user must have either the `internal-admin` role or `claims.internal_admin: true`.
+The admin console uses the mock itself for authentication. Configure a secure tenant named `internal` with a client named `internal-admin`; the server rejects the admin UI if this tenant is not secure. The signed-in user must have either the `internal-admin` role or `claims.internal_admin: true`.
 
 ```json
 {

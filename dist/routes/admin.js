@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { saveConfig } from "../config.js";
 import { constantTimeEqual, getSessionUser, setSessionUser } from "../oidc/session.js";
+import { createCodeChallenge, verifyCodeVerifier } from "../oidc/pkce.js";
 import { resolveEffectiveUser } from "../oidc/users.js";
 import { ClientSecretRotationError } from "../oidc/client-secret-rotation.js";
 import { findClient, findTenant, findUser, validateRedirectUri, validateScopes } from "../oidc/validation.js";
@@ -25,9 +26,15 @@ export function registerAdminRoutes(app, context) {
             res.status(503).type("html").send(renderAdminSetupPage(setup.description, createInternalTenantExample(config)));
             return;
         }
-        const sessionUser = getSessionUser(req, config, setup.tenant, context.sessionSecret);
+        const sessionUser = getSessionUser(req, config, setup.tenant, context.sessionSecret, context.passkeyStore);
         if (!sessionUser) {
-            res.redirect(createAdminAuthorizeUrl(config).toString());
+            const transaction = context.state.createPkceTransaction();
+            if (!transaction) {
+                res.setHeader("Retry-After", "60");
+                res.status(503).type("html").send(renderAdminSetupPage("Too many admin login requests are pending. Try again shortly.", createInternalTenantExample(config)));
+                return;
+            }
+            res.redirect(createAdminAuthorizeUrl(config, transaction.state, transaction.verifier).toString());
             return;
         }
         if (!isAdminUser(sessionUser.user)) {
@@ -40,10 +47,18 @@ export function registerAdminRoutes(app, context) {
      * Completes the internal OIDC login and creates the admin UI session cookie.
      */
     app.get("/internal/admin/callback", (req, res) => {
+        res.setHeader("Cache-Control", "no-store");
+        res.setHeader("Pragma", "no-cache");
         const config = context.getConfig();
         const setup = getAdminSetup(config);
         if (!setup.ok) {
             res.status(503).type("html").send(renderAdminSetupPage(setup.description, createInternalTenantExample(config)));
+            return;
+        }
+        const state = readString(req.query.state);
+        const verifier = state ? context.state.consumePkceVerifier(state) : undefined;
+        if (!state || !verifier) {
+            res.status(401).type("html").send(renderAdminSetupPage("Admin login state is invalid or expired.", createInternalTenantExample(config)));
             return;
         }
         const code = readString(req.query.code);
@@ -51,7 +66,9 @@ export function registerAdminRoutes(app, context) {
         if (!entry ||
             entry.tenantId !== ADMIN_TENANT_ID ||
             entry.clientId !== ADMIN_CLIENT_ID ||
-            entry.redirectUri !== adminRedirectUri(config)) {
+            entry.redirectUri !== adminRedirectUri(config) ||
+            entry.state !== state ||
+            !verifyCodeVerifier(verifier, entry.codeChallenge)) {
             res.status(401).type("html").send(renderAdminSetupPage("Admin login code is invalid or expired.", createInternalTenantExample(config)));
             return;
         }
@@ -71,7 +88,7 @@ export function registerAdminRoutes(app, context) {
      * Returns the editable config with secrets redacted and a CSRF token for writes.
      */
     app.get("/internal/admin/api/config", (req, res) => {
-        const auth = getAdminRequestUser(context.getConfig(), req, context.sessionSecret);
+        const auth = getAdminRequestUser(context.getConfig(), req, context.sessionSecret, context.passkeyStore);
         if (!auth.ok) {
             res.status(auth.status).json({ error: auth.error, error_description: auth.description });
             return;
@@ -87,7 +104,7 @@ export function registerAdminRoutes(app, context) {
      * Saves an updated config file from the admin UI.
      */
     app.put("/internal/admin/api/config", (req, res) => {
-        const auth = getAdminRequestUser(context.getConfig(), req, context.sessionSecret);
+        const auth = getAdminRequestUser(context.getConfig(), req, context.sessionSecret, context.passkeyStore);
         if (!auth.ok) {
             res.status(auth.status).json({ error: auth.error, error_description: auth.description });
             return;
@@ -121,7 +138,7 @@ export function registerAdminRoutes(app, context) {
      */
     app.post("/internal/admin/api/client-secrets/emergency-rotate", (req, res) => {
         const config = context.getConfig();
-        const auth = getAdminRequestUser(config, req, context.sessionSecret);
+        const auth = getAdminRequestUser(config, req, context.sessionSecret, context.passkeyStore);
         if (!auth.ok) {
             res.status(auth.status).json({ error: auth.error, error_description: auth.description });
             return;
@@ -185,7 +202,7 @@ export function registerAdminRoutes(app, context) {
      */
     app.post("/internal/admin/api/client-secrets/emergency-revoke", (req, res) => {
         const config = context.getConfig();
-        const auth = getAdminRequestUser(config, req, context.sessionSecret);
+        const auth = getAdminRequestUser(config, req, context.sessionSecret, context.passkeyStore);
         if (!auth.ok) {
             res.status(auth.status).json({ error: auth.error, error_description: auth.description });
             return;
@@ -243,7 +260,7 @@ export function registerAdminRoutes(app, context) {
      */
     app.post("/internal/admin/api/passwords", (req, res) => {
         const config = context.getConfig();
-        const auth = getAdminRequestUser(config, req, context.sessionSecret);
+        const auth = getAdminRequestUser(config, req, context.sessionSecret, context.passkeyStore);
         if (!auth.ok) {
             res.status(auth.status).json({ error: auth.error, error_description: auth.description });
             return;
@@ -286,7 +303,7 @@ export function registerAdminRoutes(app, context) {
      */
     app.delete("/internal/admin/api/mfa", (req, res) => {
         const config = context.getConfig();
-        const auth = getAdminRequestUser(config, req, context.sessionSecret);
+        const auth = getAdminRequestUser(config, req, context.sessionSecret, context.passkeyStore);
         if (!auth.ok) {
             res.status(auth.status).json({ error: auth.error, error_description: auth.description });
             return;
@@ -321,7 +338,7 @@ export function registerAdminRoutes(app, context) {
      */
     app.delete("/internal/admin/api/passkeys", (req, res) => {
         const config = context.getConfig();
-        const auth = getAdminRequestUser(config, req, context.sessionSecret);
+        const auth = getAdminRequestUser(config, req, context.sessionSecret, context.passkeyStore);
         if (!auth.ok) {
             res.status(auth.status).json({ error: auth.error, error_description: auth.description });
             return;
@@ -425,6 +442,9 @@ function getAdminSetup(config) {
     if (!tenant) {
         return { ok: false, description: `Tenant "${ADMIN_TENANT_ID}" is required for the admin UI.` };
     }
+    if (!tenant.secure) {
+        return { ok: false, description: `Tenant "${ADMIN_TENANT_ID}" must use secure email and password login.` };
+    }
     const client = findClient(tenant, ADMIN_CLIENT_ID);
     if (!client) {
         return { ok: false, description: `Client "${ADMIN_CLIENT_ID}" is required in tenant "${ADMIN_TENANT_ID}".` };
@@ -443,12 +463,12 @@ function getAdminSetup(config) {
 /**
  * Authenticates an admin API request using the internal tenant session cookie.
  */
-function getAdminRequestUser(config, req, sessionSecret) {
+function getAdminRequestUser(config, req, sessionSecret, passkeyStore) {
     const setup = getAdminSetup(config);
     if (!setup.ok) {
         return { ok: false, status: 503, error: "admin_not_configured", description: setup.description };
     }
-    const sessionUser = getSessionUser(req, config, setup.tenant, sessionSecret);
+    const sessionUser = getSessionUser(req, config, setup.tenant, sessionSecret, passkeyStore);
     if (!sessionUser) {
         return { ok: false, status: 401, error: "login_required", description: "Sign in with the internal tenant first" };
     }
@@ -488,13 +508,15 @@ function verifyAdminCsrfToken(req, user, sessionSecret) {
 /**
  * Builds the internal tenant authorize URL used to start admin login.
  */
-function createAdminAuthorizeUrl(config) {
+function createAdminAuthorizeUrl(config, state, verifier) {
     const url = new URL(`${config.baseUrl.replace(/\/$/, "")}/${ADMIN_TENANT_ID}/oauth2/v2.0/authorize`);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("client_id", ADMIN_CLIENT_ID);
     url.searchParams.set("redirect_uri", adminRedirectUri(config));
     url.searchParams.set("scope", "openid profile email");
-    url.searchParams.set("state", "admin");
+    url.searchParams.set("state", state);
+    url.searchParams.set("code_challenge", createCodeChallenge(verifier));
+    url.searchParams.set("code_challenge_method", "S256");
     return url;
 }
 /**

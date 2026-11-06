@@ -13,6 +13,7 @@ import { registerInternalRoutes } from "./routes/internal.js";
 import { registerOidcRoutes } from "./routes/oidc.js";
 import type { RouteContext } from "./routes/types.js";
 import type { ClientSecretRotationPermission, ClientSecretRotationStore } from "./oidc/client-secret-rotation.js";
+import { createAuthenticationRateLimitMiddleware } from "./security/rate-limit.js";
 
 type AppDeps = {
   config: AppConfig | (() => AppConfig);
@@ -72,6 +73,7 @@ export function createApp({
   };
 
   app.disable("x-powered-by");
+  app.set("trust proxy", configuredTrustedProxyHops());
   // Keep form and JSON bodies bounded because config and login endpoints accept user input.
   app.use(express.urlencoded({ extended: false, limit: "100kb" }));
   app.use(express.json({ limit: "100kb" }));
@@ -89,6 +91,7 @@ export function createApp({
     });
     next();
   });
+  app.use(createAuthenticationRateLimitMiddleware());
 
   app.get("/", (_req, res) => {
     res.redirect("/internal/admin");
@@ -104,4 +107,17 @@ export function createApp({
   registerInternalRoutes(app, routeContext);
 
   return app;
+}
+
+function configuredTrustedProxyHops(): number | false {
+  const raw = process.env.OIDC_MOCK_TRUST_PROXY_HOPS;
+  if (!raw) {
+    return false;
+  }
+
+  const hops = Number(raw);
+  if (!Number.isInteger(hops) || hops < 1 || hops > 10) {
+    throw new Error("OIDC_MOCK_TRUST_PROXY_HOPS must be an integer from 1 to 10");
+  }
+  return hops;
 }

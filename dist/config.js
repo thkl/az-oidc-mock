@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { ensurePrivateFilePermissions, writePrivateFileAtomically } from "./private-file.js";
 const userSchema = z.object({
     sub: z.string().min(1),
     name: z.string().min(1),
@@ -128,6 +129,7 @@ export function parseConfig(raw) {
  */
 export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json") {
     const resolved = path.resolve(configPath);
+    ensurePrivateFilePermissions(resolved);
     const raw = fs.readFileSync(resolved, "utf8");
     const parsed = parseConfig(JSON.parse(raw));
     return {
@@ -144,9 +146,7 @@ export function loadConfig(configPath = process.env.CONFIG_PATH ?? "config.json"
 export function saveConfig(configPath, nextConfig) {
     const parsed = parseConfig(normalizeConfigForSave(nextConfig));
     const resolved = path.resolve(configPath);
-    const tmpPath = `${resolved}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-    fs.renameSync(tmpPath, resolved);
+    writePrivateFileAtomically(resolved, `${JSON.stringify(parsed, null, 2)}\n`);
     return parsed;
 }
 /**

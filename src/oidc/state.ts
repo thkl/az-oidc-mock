@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 import type { AuthContext, AuthLevel } from "./auth-level.js";
 import { isAuthLevel } from "./auth-level.js";
+import { createCodeVerifier } from "./pkce.js";
+import { ensurePrivateFilePermissions, writePrivateFileAtomically } from "../private-file.js";
 
 export type AuthorizationRequest = {
   tenantId: string;
@@ -13,6 +14,7 @@ export type AuthorizationRequest = {
   nonce?: string;
   deviceId?: string;
   acr?: string;
+  codeChallenge?: string;
 };
 
 export type AuthorizationCode = AuthorizationRequest & {
@@ -48,6 +50,7 @@ type PersistedRefreshTokenStore = {
 export class OidcState {
   private authorizationCodes = new Map<string, AuthorizationCode>();
   private refreshTokens = new Map<string, RefreshToken>();
+  private pkceTransactions = new Map<string, { verifier: string; expiresAt: number }>();
 
   /**
    * Creates state storage and hydrates persisted refresh tokens when configured.
@@ -70,6 +73,32 @@ export class OidcState {
       expiresAt: Date.now() + 5 * 60 * 1000
     });
     return code;
+  }
+
+  /**
+   * Starts a short-lived PKCE transaction for first-party authorization flows.
+   */
+  createPkceTransaction(): { state: string; verifier: string } | undefined {
+    this.prunePkceTransactions();
+    if (this.pkceTransactions.size >= 10_000) {
+      return undefined;
+    }
+    const state = randomToken();
+    const verifier = createCodeVerifier();
+    this.pkceTransactions.set(state, { verifier, expiresAt: Date.now() + 5 * 60 * 1000 });
+    return { state, verifier };
+  }
+
+  /**
+   * Consumes a first-party PKCE verifier once when its state is returned.
+   */
+  consumePkceVerifier(state: string): string | undefined {
+    const transaction = this.pkceTransactions.get(state);
+    this.pkceTransactions.delete(state);
+    if (!transaction || transaction.expiresAt < Date.now()) {
+      return undefined;
+    }
+    return transaction.verifier;
   }
 
   /**
@@ -123,6 +152,7 @@ export class OidcState {
       return;
     }
 
+    ensurePrivateFilePermissions(this.refreshTokenStorePath);
     const raw = fs.readFileSync(this.refreshTokenStorePath, "utf8");
     const parsed = JSON.parse(raw) as Partial<PersistedRefreshTokenStore>;
     if (parsed.version !== 1 || !Array.isArray(parsed.refreshTokens)) {
@@ -156,15 +186,20 @@ export class OidcState {
       }
     }
 
-    const dir = path.dirname(this.refreshTokenStorePath);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = `${this.refreshTokenStorePath}.${process.pid}.tmp`;
     const payload: PersistedRefreshTokenStore = {
       version: 1,
       refreshTokens: [...this.refreshTokens.values()]
     };
-    fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), "utf8");
-    fs.renameSync(tmpPath, this.refreshTokenStorePath);
+    writePrivateFileAtomically(this.refreshTokenStorePath, JSON.stringify(payload, null, 2));
+  }
+
+  private prunePkceTransactions(): void {
+    const now = Date.now();
+    for (const [state, transaction] of this.pkceTransactions) {
+      if (transaction.expiresAt < now) {
+        this.pkceTransactions.delete(state);
+      }
+    }
   }
 }
 

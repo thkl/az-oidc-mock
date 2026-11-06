@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { tenantIssuer } from "../config.js";
 import { authContext, isAuthLevel } from "../oidc/auth-level.js";
+import { isS256CodeChallenge, verifyCodeVerifier } from "../oidc/pkce.js";
 import { createTotpSecret, createTotpUri, verifyTotpSecret } from "../oidc/mfa.js";
 import { createPasskeyChallenge, verifyPasskeyRegistration } from "../oidc/passkeys.js";
 import { clearSessionUser, getSessionUser, setSessionUser } from "../oidc/session.js";
@@ -53,7 +54,7 @@ export function registerOidcRoutes(app, context) {
             prompt: req.query.prompt,
             enableSessions
         });
-        const validation = validateAuthorizeRequest(tenant, req.query);
+        const validation = validateAuthorizeRequest(tenant, req.query, context.clientSecretRotationStore);
         if (!validation.ok) {
             context.logger.warn("authorize request rejected", {
                 tenantId: tenant.tenantId,
@@ -63,9 +64,9 @@ export function registerOidcRoutes(app, context) {
             sendAuthorizeError(res, req.query.redirect_uri, req.query.state, validation.error, validation.description);
             return;
         }
-        // Existing signed sessions satisfy interactive authorize requests unless prompt=none needs an error.
+        // A mandatory passkey policy also applies to existing sessions, including sessions created before policy changes.
         if (enableSessions === true) {
-            const sessionUser = getSessionUser(req, config, tenant, context.sessionSecret);
+            const sessionUser = getSessionUser(req, config, tenant, context.sessionSecret, context.passkeyStore);
             if (sessionUser) {
                 const sessionAuth = authContext("cookie", sessionUser.authLevel);
                 if (!satisfiesRequestedAcr(validation.request, sessionAuth)) {
@@ -112,16 +113,7 @@ export function registerOidcRoutes(app, context) {
             return;
         }
         // No reusable session exists, so render a tenant-specific login experience.
-        res.type("html").send(renderLoginPage(tenant, {
-            client_id: validation.client.clientId,
-            redirect_uri: validation.request.redirectUri,
-            response_type: "code",
-            scope: validation.request.scope.join(" "),
-            state: validation.request.state ?? "",
-            nonce: validation.request.nonce ?? "",
-            device_id: validation.request.deviceId ?? "",
-            acr_values: acrValuesFromRequest(validation.request)
-        }, readString(req.query.login_error), listEffectiveUsers(config, tenant).map((entry) => entry.user)));
+        res.type("html").send(renderLoginPage(tenant, authorizeParamsFromRequest(validation.client, validation.request), readString(req.query.login_error), listEffectiveUsers(config, tenant).map((entry) => entry.user)));
     });
     /**
      * Handles password/user-picker login, MFA steps, optional passkey setup, and code issuance.
@@ -132,7 +124,7 @@ export function registerOidcRoutes(app, context) {
         if (!tenant)
             return;
         context.logger.verbose(config, "login form submitted", { tenantId: tenant.tenantId, clientId: req.body.client_id });
-        const validation = validateAuthorizeRequest(tenant, req.body);
+        const validation = validateAuthorizeRequest(tenant, req.body, context.clientSecretRotationStore);
         if (!validation.ok) {
             context.logger.warn("login request rejected", {
                 tenantId: tenant.tenantId,
@@ -147,8 +139,16 @@ export function registerOidcRoutes(app, context) {
             ? verifyPasskeyChallenge(readString(req.body.passkey_challenge), tenant.tenantId, context.sessionSecret)
             : undefined;
         if (passkeyChallenge && readString(req.body.passkey_action) === "continue") {
+            if (!sameAuthorizeRequest(passkeyChallenge.request, validation.request)) {
+                sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "invalid_request", "Login continuation does not match the original authorization request");
+                return;
+            }
             const user = resolveEffectiveUser(config, tenant, passkeyChallenge.userSub);
             if (user) {
+                if (tenant.passkeysMandatory && !context.passkeyStore.isEnrolled(user.homeTenant.tenantId, user.user.sub)) {
+                    res.status(403).json({ error: "passkey_required", error_description: "A passkey must be enrolled before login can continue" });
+                    return;
+                }
                 completeLogin({
                     tenant,
                     user: user.user,
@@ -168,22 +168,17 @@ export function registerOidcRoutes(app, context) {
         const challenge = readString(req.body.mfa_challenge)
             ? verifyMfaChallenge(readString(req.body.mfa_challenge), tenant.tenantId, context.sessionSecret)
             : undefined;
+        if (challenge && !sameAuthorizeRequest(challenge.request, validation.request)) {
+            sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "invalid_request", "Login continuation does not match the original authorization request");
+            return;
+        }
         const login = challenge
             ? authenticateMfaChallengeUser(config, tenant, challenge)
             : authenticateLogin(config, tenant, req, context.passwordStore);
         if (!login.ok) {
             context.logger.warn("login rejected", { tenantId: tenant.tenantId, reason: login.description });
             if (tenant.secure) {
-                res.type("html").status(401).send(renderLoginPage(tenant, {
-                    client_id: validation.client.clientId,
-                    redirect_uri: validation.request.redirectUri,
-                    response_type: "code",
-                    scope: validation.request.scope.join(" "),
-                    state: validation.request.state ?? "",
-                    nonce: validation.request.nonce ?? "",
-                    device_id: validation.request.deviceId ?? "",
-                    acr_values: acrValuesFromRequest(validation.request)
-                }, login.description, listEffectiveUsers(config, tenant).map((entry) => entry.user)));
+                res.type("html").status(401).send(renderLoginPage(tenant, authorizeParamsFromRequest(validation.client, validation.request), login.description, listEffectiveUsers(config, tenant).map((entry) => entry.user)));
                 return;
             }
             sendAuthorizeError(res, validation.request.redirectUri, validation.request.state, "access_denied", login.description);
@@ -331,7 +326,7 @@ export function registerOidcRoutes(app, context) {
         if (!tenant)
             return;
         const body = readObjectBody(req);
-        const validation = validateAuthorizeRequest(tenant, body);
+        const validation = validateAuthorizeRequest(tenant, body, context.clientSecretRotationStore);
         const username = readString(body.username)?.toLowerCase();
         const user = username ? resolveEffectiveUserByUsername(config, tenant, username) : undefined;
         const credentials = user ? context.passkeyStore.list(user.homeTenant.tenantId, user.user.sub) : [];
@@ -528,6 +523,7 @@ function createDiscoveryDocument(config, tenant) {
         response_modes_supported: ["query", "form_post"],
         subject_types_supported: ["pairwise"],
         id_token_signing_alg_values_supported: ["RS256"],
+        code_challenge_methods_supported: ["S256"],
         response_types_supported: ["code", "id_token", "code id_token"],
         grant_types_supported: ["authorization_code", "refresh_token"],
         scopes_supported: tenantScopes(tenant),
@@ -568,7 +564,7 @@ function createDiscoveryDocument(config, tenant) {
 /**
  * Validates an authorize request and normalizes it into internal state.
  */
-function validateAuthorizeRequest(tenant, query) {
+function validateAuthorizeRequest(tenant, query, rotationStore) {
     if (query.response_type !== "code") {
         return { ok: false, error: "unsupported_response_type", description: "Only response_type=code is supported" };
     }
@@ -586,6 +582,23 @@ function validateAuthorizeRequest(tenant, query) {
     }
     if (!validateRedirectUri(client, redirectUri)) {
         return { ok: false, error: "invalid_request", description: "redirect_uri is not registered for client" };
+    }
+    if ((query.code_challenge !== undefined && typeof query.code_challenge !== "string") ||
+        (query.code_challenge_method !== undefined && typeof query.code_challenge_method !== "string")) {
+        return { ok: false, error: "invalid_request", description: "PKCE parameters must be single string values" };
+    }
+    const codeChallenge = emptyToUndefined(query.code_challenge);
+    const codeChallengeMethod = emptyToUndefined(query.code_challenge_method);
+    if (codeChallenge && (codeChallengeMethod !== "S256" || !isS256CodeChallenge(codeChallenge))) {
+        return { ok: false, error: "invalid_request", description: "Only a valid S256 code_challenge is supported" };
+    }
+    if (!codeChallenge && codeChallengeMethod) {
+        return { ok: false, error: "invalid_request", description: "code_challenge_method requires code_challenge" };
+    }
+    const clientRequiresSecret = Boolean(client.clientSecret || client.clientSecrets?.length) ||
+        Boolean(rotationStore?.requiresClientSecret(tenant.tenantId, client.clientId));
+    if (!clientRequiresSecret && !codeChallenge) {
+        return { ok: false, error: "invalid_request", description: "Public clients must use PKCE with S256" };
     }
     const scope = parseScopes(query.scope);
     if (!scope.includes("openid")) {
@@ -610,7 +623,8 @@ function validateAuthorizeRequest(tenant, query) {
             state: emptyToUndefined(query.state),
             nonce: emptyToUndefined(query.nonce),
             deviceId: device.deviceId,
-            acr
+            acr,
+            codeChallenge
         }
     };
 }
@@ -671,7 +685,8 @@ function createCodeRedirectUrl(oidcState, tenantId, client, request, userSub, au
         state: request.state,
         nonce: request.nonce,
         deviceId: request.deviceId,
-        acr: request.acr
+        acr: request.acr,
+        codeChallenge: request.codeChallenge
     }, userSub, auth);
     const redirectUrl = new URL(request.redirectUri);
     redirectUrl.searchParams.set("code", code);
@@ -853,7 +868,9 @@ function authorizeParamsFromRequest(client, request) {
         state: request.state ?? "",
         nonce: request.nonce ?? "",
         device_id: request.deviceId ?? "",
-        acr_values: acrValuesFromRequest(request)
+        acr_values: acrValuesFromRequest(request),
+        code_challenge: request.codeChallenge ?? "",
+        code_challenge_method: request.codeChallenge ? "S256" : ""
     };
 }
 /**
@@ -994,7 +1011,22 @@ function isValidatedAuthorizeRequest(value) {
         (request.state === undefined || typeof request.state === "string") &&
         (request.nonce === undefined || typeof request.nonce === "string") &&
         (request.deviceId === undefined || typeof request.deviceId === "string") &&
+        (request.codeChallenge === undefined || (typeof request.codeChallenge === "string" && isS256CodeChallenge(request.codeChallenge))) &&
         (request.acr === undefined || request.acr === MFA_ACR);
+}
+/**
+ * Ensures an MFA or passkey continuation is still bound to its original authorize request.
+ */
+function sameAuthorizeRequest(left, right) {
+    return left.clientId === right.clientId &&
+        left.redirectUri === right.redirectUri &&
+        left.scope.length === right.scope.length &&
+        left.scope.every((scope, index) => scope === right.scope[index]) &&
+        left.state === right.state &&
+        left.nonce === right.nonce &&
+        left.deviceId === right.deviceId &&
+        left.acr === right.acr &&
+        left.codeChallenge === right.codeChallenge;
 }
 /**
  * Compares two strings without leaking timing differences for equal-length values.
@@ -1029,6 +1061,16 @@ async function handleAuthorizationCodeGrant(args) {
             clientId: args.client.clientId
         });
         sendTokenError(args.res, "invalid_grant", "Authorization code is invalid or expired");
+        return;
+    }
+    const rawCodeVerifier = args.req.body.code_verifier;
+    if (rawCodeVerifier !== undefined && typeof rawCodeVerifier !== "string") {
+        sendTokenError(args.res, "invalid_request", "code_verifier must be a single string value");
+        return;
+    }
+    const codeVerifier = typeof rawCodeVerifier === "string" ? rawCodeVerifier : undefined;
+    if (entry.codeChallenge ? !verifyCodeVerifier(codeVerifier, entry.codeChallenge) : codeVerifier !== undefined) {
+        sendTokenError(args.res, "invalid_grant", "PKCE code_verifier is invalid");
         return;
     }
     const resolvedUser = resolveEffectiveUser(args.config, args.tenant, entry.userSub);
