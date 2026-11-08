@@ -160,6 +160,22 @@ Authorization: Bearer <same-rotation-capability>
 
 The manager calls this only after it has durably saved the new value in its secret store and updated the consuming workload. The new version becomes current and its configured lifetime begins. The old version remains accepted for a five-minute grace period, then expires. A pending operation that is not activated before its expiry is discarded and leaves the existing current version active.
 
+On success, the activation response includes `expires_at` for the newly activated secret when a client-secret lifetime is configured. Use this timestamp to schedule the next rotation ahead of expiration. It is omitted when the secret has no configured lifetime. `pending_expires_at` in the start response is only the deadline to activate the pending version.
+
+```json
+{
+  "rotation_id": "rot_...",
+  "tenant_id": "common",
+  "client_id": "orders-api",
+  "name": "prod",
+  "secret_version": "sv_...",
+  "state": "current",
+  "activated_at": "<RFC3339 timestamp>",
+  "expires_at": "<RFC3339 timestamp>",
+  "previous_secret_grace_expires_at": "<RFC3339 timestamp>"
+}
+```
+
 The server allows only one pending rotation per credential name. Other names for the same client can rotate independently. There is no separate abort endpoint; `DELETE` revokes all versions for a name.
 
 ### Emergency rotate or revoke from the admin UI

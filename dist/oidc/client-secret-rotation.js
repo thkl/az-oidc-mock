@@ -270,6 +270,7 @@ export class ClientSecretRotationStore {
                 secretVersion: operation.versionId,
                 state: version.state,
                 ...(version.activatedAt !== undefined ? { activatedAt: version.activatedAt } : {}),
+                ...(version.expiresAt !== undefined ? { expiresAt: version.expiresAt } : {}),
                 ...(record.versions.find((candidate) => candidate.state === "grace")?.expiresAt
                     ? { previousSecretGraceExpiresAt: record.versions.find((candidate) => candidate.state === "grace")?.expiresAt }
                     : {}),
@@ -325,6 +326,7 @@ export class ClientSecretRotationStore {
             secretVersion: nextVersion.versionId,
             state: "current",
             activatedAt: now,
+            ...(nextVersion.expiresAt !== undefined ? { expiresAt: nextVersion.expiresAt } : {}),
             ...(previousSecretGraceExpiresAt ? { previousSecretGraceExpiresAt } : {}),
             replayed: false
         };

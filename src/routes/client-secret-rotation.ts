@@ -196,6 +196,7 @@ export function registerClientSecretRotationRoutes(app: Express, context: RouteC
         secret_version: activated.secretVersion,
         state: activated.state,
         ...(activated.activatedAt !== undefined ? { activated_at: new Date(activated.activatedAt).toISOString() } : {}),
+        ...(activated.expiresAt !== undefined ? { expires_at: new Date(activated.expiresAt).toISOString() } : {}),
         ...(activated.previousSecretGraceExpiresAt !== undefined
           ? { previous_secret_grace_expires_at: new Date(activated.previousSecretGraceExpiresAt).toISOString() }
           : {})
