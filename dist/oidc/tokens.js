@@ -20,6 +20,7 @@ const RESERVED_CLAIMS = new Set([
     "auth_level",
     "auth_original_level",
     "acr",
+    "auth_time",
     "client_info"
 ]);
 /**
@@ -55,6 +56,9 @@ export async function createIdToken(input) {
     }
     if (input.acr) {
         claims.acr = input.acr;
+    }
+    if (input.authTime !== undefined) {
+        claims.auth_time = input.authTime;
     }
     return signJwt(claims, input.keys);
 }

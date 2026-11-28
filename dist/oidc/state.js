@@ -21,7 +21,7 @@ export class OidcState {
     /**
      * Creates a one-time authorization code for a validated authorization request.
      */
-    createCode(request, userSub, auth) {
+    createCode(request, userSub, auth, authTime) {
         const code = randomToken();
         this.authorizationCodes.set(code, {
             ...request,
@@ -29,6 +29,7 @@ export class OidcState {
             userSub,
             authLevel: auth.level,
             authOriginalLevel: auth.originalLevel,
+            authTime,
             expiresAt: Date.now() + 5 * 60 * 1000
         });
         return code;
@@ -165,6 +166,7 @@ function normalizeRefreshToken(value) {
         (token.nonce === undefined || typeof token.nonce === "string") &&
         (token.deviceId === undefined || typeof token.deviceId === "string") &&
         (token.acr === undefined || typeof token.acr === "string") &&
+        (token.authTime === undefined || Number.isSafeInteger(token.authTime)) &&
         (token.authLevel === undefined || isAuthLevel(token.authLevel)) &&
         (token.authOriginalLevel === undefined || isAuthLevel(token.authOriginalLevel)) &&
         typeof token.expiresAt === "number")) {
@@ -181,6 +183,7 @@ function normalizeRefreshToken(value) {
         nonce: token.nonce,
         deviceId: token.deviceId,
         acr: token.acr,
+        authTime: token.authTime,
         expiresAt: token.expiresAt
     };
 }

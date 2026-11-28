@@ -81,7 +81,7 @@ export function registerAdminRoutes(app, context) {
             res.status(403).type("html").send(renderAdminSetupPage(adminAccessDescription(), createInternalTenantExample(config)));
             return;
         }
-        setSessionUser(req, res, config, setup.tenant, resolvedUser.user.sub, entry.authOriginalLevel, context.sessionSecret);
+        setSessionUser(req, res, config, setup.tenant, resolvedUser.user.sub, entry.authOriginalLevel, context.sessionSecret, entry.authTime);
         res.redirect("/internal/admin");
     });
     /**

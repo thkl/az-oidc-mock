@@ -67,7 +67,11 @@ export function registerOidcRoutes(app, context) {
         }
         // A mandatory passkey policy also applies to existing sessions, including sessions created before policy changes.
         if (enableSessions === true) {
-            const sessionUser = getSessionUser(req, config, tenant, context.sessionSecret, context.passkeyStore);
+            const storedSession = getSessionUser(req, config, tenant, context.sessionSecret, context.passkeyStore);
+            // A session older than the requested max_age is ignored, so the user has to authenticate again.
+            const sessionUser = storedSession && satisfiesMaxAge(storedSession.authTime, validation.request.maxAge)
+                ? storedSession
+                : undefined;
             if (sessionUser) {
                 const sessionAuth = authContext("cookie", sessionUser.authLevel);
                 if (!satisfiesRequestedAcr(validation.request, sessionAuth)) {
@@ -103,7 +107,7 @@ export function registerOidcRoutes(app, context) {
                     userSub: sessionUser.user.sub,
                     authLevel: sessionUser.authLevel
                 });
-                redirectWithCode(res, context.state, tenant.tenantId, validation.client, validation.request, sessionUser.user.sub, sessionAuth);
+                redirectWithCode(res, context.state, tenant.tenantId, validation.client, validation.request, sessionUser.user.sub, sessionAuth, sessionUser.authTime);
                 return;
             }
         }
@@ -325,10 +329,11 @@ export function registerOidcRoutes(app, context) {
             return;
         }
         // Completing passkey enrollment is also a successful login, so establish the reusable tenant session.
+        const authTime = nowSeconds();
         if (tenant.enableSessions) {
-            setSessionUser(req, res, config, tenant, user.user.sub, token.auth.originalLevel, context.sessionSecret);
+            setSessionUser(req, res, config, tenant, user.user.sub, token.auth.originalLevel, context.sessionSecret, authTime);
         }
-        const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub, token.auth);
+        const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub, token.auth, authTime);
         res.json({ redirect });
     });
     /**
@@ -408,10 +413,11 @@ export function registerOidcRoutes(app, context) {
             return;
         }
         // Successful passkey assertions must create the same reusable session as password logins.
+        const authTime = nowSeconds();
         if (tenant.enableSessions) {
-            setSessionUser(req, res, config, tenant, user.user.sub, token.auth.originalLevel, context.sessionSecret);
+            setSessionUser(req, res, config, tenant, user.user.sub, token.auth.originalLevel, context.sessionSecret, authTime);
         }
-        const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub, authContext("passkey"));
+        const redirect = createCodeRedirectUrl(context.state, tenant.tenantId, client, token.request, user.user.sub, authContext("passkey"), authTime);
         res.json({ redirect });
     });
     /**
@@ -564,7 +570,8 @@ function createDiscoveryDocument(config, tenant) {
             "ver",
             "auth_level",
             "auth_original_level",
-            "acr"
+            "acr",
+            "auth_time"
         ],
         acr_values_supported: ["mfa", MFA_ACR],
         kerberos_endpoint: `${base}/${encodedTenantId}/kerberos`,
@@ -650,6 +657,10 @@ function validateAuthorizeRequest(config, tenant, query, rotationStore) {
         return { ok: false, error: "access_denied", description: device.description };
     }
     const acr = requestedAcr(query.acr_values);
+    const maxAge = parseMaxAge(query.max_age);
+    if (maxAge === null) {
+        return { ok: false, error: "invalid_request", description: "max_age must be a non-negative integer" };
+    }
     return {
         ok: true,
         client,
@@ -661,9 +672,38 @@ function validateAuthorizeRequest(config, tenant, query, rotationStore) {
             nonce: emptyToUndefined(query.nonce),
             deviceId: device.deviceId,
             acr,
+            maxAge,
             codeChallenge
         }
     };
+}
+/**
+ * Parses the optional OIDC max_age parameter; returns null when it is present but malformed.
+ */
+function parseMaxAge(value) {
+    if (value === undefined || value === "") {
+        return undefined;
+    }
+    if (typeof value !== "string" || !/^\d+$/.test(value)) {
+        return null;
+    }
+    const maxAge = Number(value);
+    return Number.isSafeInteger(maxAge) ? maxAge : null;
+}
+/**
+ * Checks whether a session authentication is recent enough for the requested max_age (OIDC Core 3.1.2.1).
+ */
+function satisfiesMaxAge(authTime, maxAge) {
+    if (maxAge === undefined) {
+        return true;
+    }
+    return authTime !== undefined && nowSeconds() - authTime <= maxAge;
+}
+/**
+ * Returns the current time in epoch seconds, the unit of JWT time claims.
+ */
+function nowSeconds() {
+    return Math.floor(Date.now() / 1000);
 }
 /**
  * Resolves requested or implicit device binding for the authorize request.
@@ -707,13 +747,13 @@ function satisfiesRequestedAcr(request, auth) {
 /**
  * Redirects to the client callback with a newly created authorization code.
  */
-function redirectWithCode(res, oidcState, tenantId, client, request, userSub, auth) {
-    res.redirect(createCodeRedirectUrl(oidcState, tenantId, client, request, userSub, auth));
+function redirectWithCode(res, oidcState, tenantId, client, request, userSub, auth, authTime) {
+    res.redirect(createCodeRedirectUrl(oidcState, tenantId, client, request, userSub, auth, authTime));
 }
 /**
  * Creates the authorization-code callback URL without writing to the response.
  */
-function createCodeRedirectUrl(oidcState, tenantId, client, request, userSub, auth) {
+function createCodeRedirectUrl(oidcState, tenantId, client, request, userSub, auth, authTime) {
     const code = oidcState.createCode({
         tenantId,
         clientId: client.clientId,
@@ -724,7 +764,7 @@ function createCodeRedirectUrl(oidcState, tenantId, client, request, userSub, au
         deviceId: request.deviceId,
         acr: request.acr,
         codeChallenge: request.codeChallenge
-    }, userSub, auth);
+    }, userSub, auth, authTime);
     const redirectUrl = new URL(request.redirectUri);
     redirectUrl.searchParams.set("code", code);
     if (request.state) {
@@ -882,8 +922,9 @@ function handleMfaLoginStep(args) {
  * Finishes an interactive login by setting a session cookie and issuing a code.
  */
 function completeLogin(args) {
+    const authTime = nowSeconds();
     if (args.tenant.enableSessions) {
-        setSessionUser(args.req, args.res, args.config, args.tenant, args.user.sub, args.auth.originalLevel, args.sessionSecret);
+        setSessionUser(args.req, args.res, args.config, args.tenant, args.user.sub, args.auth.originalLevel, args.sessionSecret, authTime);
     }
     args.logger.info("mock user selected", {
         tenantId: args.tenant.tenantId,
@@ -892,7 +933,7 @@ function completeLogin(args) {
         authLevel: args.auth.level,
         authOriginalLevel: args.auth.originalLevel
     });
-    redirectWithCode(args.res, args.state, args.tenant.tenantId, args.validation.client, args.validation.request, args.user.sub, args.auth);
+    redirectWithCode(args.res, args.state, args.tenant.tenantId, args.validation.client, args.validation.request, args.user.sub, args.auth, authTime);
 }
 /**
  * Converts a validated authorize request back into hidden login form fields.
@@ -1135,6 +1176,7 @@ async function handleAuthorizationCodeGrant(args) {
             nonce: entry.nonce,
             deviceId: entry.deviceId,
             acr: entry.acr,
+            authTime: entry.authTime,
             expiresAt: refreshTokenExpiresAt
         })
         : undefined;
@@ -1150,6 +1192,7 @@ async function handleAuthorizationCodeGrant(args) {
         nonce: entry.nonce,
         deviceId: entry.deviceId,
         acr: entry.acr,
+        authTime: entry.authTime,
         refreshToken,
         refreshTokenExpiresAt: refreshToken ? refreshTokenExpiresAt : undefined
     });
@@ -1221,6 +1264,7 @@ async function handleRefreshTokenGrant(args) {
             nonce: entry.nonce,
             deviceId: entry.deviceId,
             acr: entry.acr,
+            authTime: entry.authTime,
             expiresAt: refreshTokenExpiresAt
         });
     }
@@ -1236,6 +1280,7 @@ async function handleRefreshTokenGrant(args) {
         nonce: entry.nonce,
         deviceId: entry.deviceId,
         acr: entry.acr,
+        authTime: entry.authTime,
         refreshToken,
         refreshTokenExpiresAt
     });
@@ -1260,7 +1305,8 @@ async function sendTokenSet(res, args) {
         auth: args.auth,
         acr: args.acr,
         nonce: args.nonce,
-        deviceId: args.deviceId
+        deviceId: args.deviceId,
+        authTime: args.authTime
     };
     const raw = JSON.stringify({ uid: args.user.sub, utid: args.tenant.tenantId });
     // Azure clients expect client_info to be base64url JSON with uid and utid.

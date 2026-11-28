@@ -17,14 +17,14 @@ export function getSessionUser(req, config, tenant, sessionSecret, passkeyStore)
     if (resolvedUser && tenant.passkeysMandatory && !passkeyStore?.isEnrolled(resolvedUser.homeTenant.tenantId, resolvedUser.user.sub)) {
         return undefined;
     }
-    return resolvedUser ? { user: resolvedUser.user, authLevel: session.authLevel } : undefined;
+    return resolvedUser ? { user: resolvedUser.user, authLevel: session.authLevel, authTime: session.authTime } : undefined;
 }
 /**
  * Issues a signed HTTP-only login session cookie for the tenant.
  */
-export function setSessionUser(req, res, config, tenant, userSub, authLevel, sessionSecret) {
+export function setSessionUser(req, res, config, tenant, userSub, authLevel, sessionSecret, authTime) {
     const maxAge = tenant.sessionLifetimeSeconds * 1000;
-    res.cookie(`az_oidc_mock_${tenant.tenantId}`, createSessionCookie(tenant.tenantId, userSub, authLevel, Date.now() + maxAge, sessionSecret), {
+    res.cookie(`az_oidc_mock_${tenant.tenantId}`, createSessionCookie(tenant.tenantId, userSub, authLevel, authTime, Date.now() + maxAge, sessionSecret), {
         httpOnly: true,
         sameSite: "lax",
         secure: isSecureRequest(req, config),
@@ -189,8 +189,8 @@ function isValidLoginCsrfToken(token, tenant, sessionSecret) {
 /**
  * Creates the signed cookie payload that stores tenant, subject, and expiry.
  */
-function createSessionCookie(tenantId, userSub, authLevel, expiresAt, sessionSecret) {
-    const payload = base64UrlJson({ tenantId, userSub, authLevel, expiresAt });
+function createSessionCookie(tenantId, userSub, authLevel, authTime, expiresAt, sessionSecret) {
+    const payload = base64UrlJson({ tenantId, userSub, authLevel, authTime, expiresAt });
     const signature = signSessionPayload(payload, sessionSecret);
     return `v1.${payload}.${signature}`;
 }
@@ -216,7 +216,8 @@ function verifySessionCookie(cookie, tenantId, sessionSecret) {
     }
     return {
         userSub: decoded.userSub,
-        authLevel: isAuthLevel(decoded.authLevel) ? decoded.authLevel : "cookie"
+        authLevel: isAuthLevel(decoded.authLevel) ? decoded.authLevel : "cookie",
+        authTime: Number.isSafeInteger(decoded.authTime) ? decoded.authTime : undefined
     };
 }
 /**
